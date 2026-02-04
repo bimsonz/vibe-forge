@@ -3,6 +3,7 @@ use crate::error::ForgeError;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+use tracing::{debug, info};
 
 pub struct StateManager {
     forge_dir: PathBuf,
@@ -33,6 +34,7 @@ impl StateManager {
 
     /// Initialize .forge directory structure
     pub async fn init(&self) -> Result<(), ForgeError> {
+        info!(dir = %self.forge_dir.display(), "initializing .forge directory");
         fs::create_dir_all(&self.forge_dir).await?;
         fs::create_dir_all(self.forge_dir.join("agents")).await?;
         fs::create_dir_all(self.forge_dir.join("plans")).await?;
@@ -59,6 +61,11 @@ impl StateManager {
 
     /// Persist state to disk (atomic write via temp file + rename)
     pub async fn save(&self, state: &WorkspaceState) -> Result<(), ForgeError> {
+        debug!(
+            sessions = state.sessions.len(),
+            agents = state.agents.len(),
+            "saving workspace state"
+        );
         let json = serde_json::to_string_pretty(state)
             .map_err(|e| ForgeError::State(e.to_string()))?;
         let tmp = self.state_file.with_extension("json.tmp");

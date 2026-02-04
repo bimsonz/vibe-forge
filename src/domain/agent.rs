@@ -111,3 +111,66 @@ impl Agent {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn make_agent() -> Agent {
+        Agent::new(
+            Uuid::new_v4(),
+            "test-agent".into(),
+            AgentMode::Headless,
+            "do something".into(),
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/agents"),
+        )
+    }
+
+    #[test]
+    fn test_agent_new_defaults() {
+        let agent = make_agent();
+        assert_eq!(agent.name, "test-agent");
+        assert_eq!(agent.mode, AgentMode::Headless);
+        assert_eq!(agent.status, AgentStatus::Queued);
+        assert!(agent.template.is_none());
+        assert!(agent.result.is_none());
+        assert!(agent.completed_at.is_none());
+        assert!(agent.output_file.to_string_lossy().contains("output.json"));
+    }
+
+    #[test]
+    fn test_is_running() {
+        let mut agent = make_agent();
+        assert!(!agent.is_running());
+        agent.status = AgentStatus::Running;
+        assert!(agent.is_running());
+        agent.status = AgentStatus::Completed;
+        assert!(!agent.is_running());
+    }
+
+    #[test]
+    fn test_is_done() {
+        let mut agent = make_agent();
+        assert!(!agent.is_done());
+        agent.status = AgentStatus::Running;
+        assert!(!agent.is_done());
+        agent.status = AgentStatus::Completed;
+        assert!(agent.is_done());
+        agent.status = AgentStatus::Failed("err".into());
+        assert!(agent.is_done());
+        agent.status = AgentStatus::Ingested;
+        assert!(agent.is_done());
+    }
+
+    #[test]
+    fn test_agent_serialization_roundtrip() {
+        let agent = make_agent();
+        let json = serde_json::to_string(&agent).unwrap();
+        let deserialized: Agent = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.id, agent.id);
+        assert_eq!(deserialized.name, agent.name);
+        assert_eq!(deserialized.status, agent.status);
+    }
+}

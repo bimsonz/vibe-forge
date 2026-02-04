@@ -19,7 +19,10 @@ use std::time::{Duration, Instant};
 
 use crate::commands;
 use crate::config;
+use crate::domain::agent::AgentStatus;
 use crate::infra::state::StateManager;
+use crate::infra::watcher::{ForgeWatcher, WatcherEvent};
+use tokio::sync::mpsc;
 
 pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
     let state_manager = StateManager::new(&workspace_root);
@@ -35,6 +38,11 @@ pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
 
     let mut app = App::new(workspace_root.clone(), state, cfg, state_manager);
 
+    // Start file watcher for agent completion
+    let (watcher_tx, mut watcher_rx) = mpsc::unbounded_channel();
+    let agents_dir = workspace_root.join(".forge").join("agents");
+    let _watcher = ForgeWatcher::start(agents_dir, watcher_tx).ok();
+
     let tick_rate = Duration::from_millis(250);
     let refresh_interval = Duration::from_secs(3);
     let mut last_tick = Instant::now();
@@ -49,6 +57,43 @@ pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
             if let Event::Key(key) = event::read()? {
                 if handle_key(&mut app, key.code, key.modifiers).await? {
                     break;
+                }
+            }
+        }
+
+        // Check for watcher events (non-blocking)
+        while let Ok(event) = watcher_rx.try_recv() {
+            match event {
+                WatcherEvent::AgentCompleted { agent_id, result } => {
+                    // Update agent in state
+                    if let Some(agent) = app.state.find_agent_by_id_mut(agent_id) {
+                        agent.status = AgentStatus::Completed;
+                        agent.completed_at = Some(chrono::Utc::now());
+                        agent.result = Some(result.clone());
+                    }
+                    app.state_manager.save(&app.state).await.ok();
+
+                    // Copy to clipboard
+                    if app.config.global.clipboard_on_complete {
+                        let text = result.raw_result.as_deref().unwrap_or(&result.summary);
+                        let _ = crate::infra::clipboard::copy_text(text);
+                    }
+
+                    // OS notification
+                    if app.config.global.notify_on_complete {
+                        let _ = notify_rust::Notification::new()
+                            .summary("Forge: Agent completed")
+                            .body(&result.summary)
+                            .show();
+                    }
+
+                    app.push_notification(
+                        format!("Agent completed — output copied to clipboard"),
+                        NotifyLevel::Success,
+                    );
+                }
+                WatcherEvent::AgentOutputWritten { .. } => {
+                    app.refresh_state().await;
                 }
             }
         }

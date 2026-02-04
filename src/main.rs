@@ -7,8 +7,9 @@ mod infra;
 mod tui;
 
 use clap::Parser;
-use cli::{Cli, Commands, ListSubcommand};
+use cli::{Cli, Commands, ListSubcommand, PlanSubcommand};
 use error::ForgeError;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -20,8 +21,17 @@ async fn main() -> anyhow::Result<()> {
         infra::git::find_repo_root(&cwd).ok()
     });
 
+    // Initialize tracing (log to .forge/forge.log if workspace exists)
+    let _guard = init_tracing(workspace_root.as_deref());
+
     // Preflight checks
     preflight_checks()?;
+
+    info!(
+        command = ?cli.command,
+        workspace = ?workspace_root,
+        "forge started"
+    );
 
     match cli.command {
         None | Some(Commands::Dashboard) => {
@@ -86,6 +96,9 @@ async fn main() -> anyhow::Result<()> {
                     let _ = session;
                     commands::status::execute(&root, false).await?;
                 }
+                ListSubcommand::Plans => {
+                    commands::plan::list(&root).await?;
+                }
                 ListSubcommand::Templates => {
                     let cfg = config::load_config(Some(&root))?;
                     let dirs = cfg.template_dirs(&root);
@@ -117,8 +130,32 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Some(Commands::Review { pr, interactive }) => {
-            let _ = (pr, interactive);
-            println!("PR review is not yet implemented (Phase 5).");
+            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            let cfg = config::load_config(Some(&root))?;
+            commands::review::execute(&root, pr, interactive, &cfg).await?;
+        }
+
+        Some(Commands::Plan { action }) => {
+            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            match action {
+                PlanSubcommand::New { title, session } => {
+                    commands::plan::create(&root, title, session).await?;
+                }
+                PlanSubcommand::List => {
+                    commands::plan::list(&root).await?;
+                }
+                PlanSubcommand::View { query } => {
+                    commands::plan::view(&root, query).await?;
+                }
+                PlanSubcommand::Copy { query } => {
+                    commands::plan::copy(&root, query).await?;
+                }
+            }
+        }
+
+        Some(Commands::Doctor) => {
+            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            commands::doctor::execute(&root).await?;
         }
 
         Some(Commands::Cleanup { all, dry_run }) => {
@@ -138,4 +175,33 @@ fn preflight_checks() -> Result<(), ForgeError> {
         return Err(ForgeError::ClaudeNotInstalled);
     }
     Ok(())
+}
+
+/// Initialize tracing with a file appender. Returns a guard that must be held
+/// for the lifetime of the program (dropping it flushes the writer).
+fn init_tracing(
+    workspace_root: Option<&std::path::Path>,
+) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    use tracing_subscriber::{fmt, EnvFilter};
+
+    let log_dir = workspace_root.map(|r| r.join(".forge"));
+    let log_dir = match log_dir {
+        Some(d) if d.exists() => d,
+        _ => return None,
+    };
+
+    let file_appender = tracing_appender::rolling::never(&log_dir, "forge.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    fmt()
+        .with_env_filter(filter)
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .with_target(true)
+        .with_thread_ids(false)
+        .init();
+
+    Some(guard)
 }

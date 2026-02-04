@@ -12,7 +12,7 @@ pub struct Cli {
     pub workspace: Option<PathBuf>,
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Launch the TUI dashboard (default when no subcommand given)
     Dashboard,
@@ -111,6 +111,15 @@ pub enum Commands {
         interactive: bool,
     },
 
+    /// Manage shared plan files
+    Plan {
+        #[command(subcommand)]
+        action: PlanSubcommand,
+    },
+
+    /// Check workspace health and reconcile state
+    Doctor,
+
     /// Clean up stale worktrees and archived sessions
     Cleanup {
         /// Remove all archived sessions
@@ -123,7 +132,7 @@ pub enum Commands {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum ListSubcommand {
     /// List all sessions
     Sessions,
@@ -134,4 +143,31 @@ pub enum ListSubcommand {
     },
     /// List available templates
     Templates,
+    /// List plans
+    Plans,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PlanSubcommand {
+    /// Create a new plan
+    New {
+        /// Plan title
+        title: String,
+
+        /// Associated session name
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+    /// List all plans
+    List,
+    /// View a plan by title or ID
+    View {
+        /// Plan title substring or UUID prefix
+        query: String,
+    },
+    /// Copy a plan's content to clipboard
+    Copy {
+        /// Plan title substring or UUID prefix
+        query: String,
+    },
 }

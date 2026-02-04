@@ -133,3 +133,94 @@ const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
     ("tester", include_str!("../../templates/tester.md")),
     ("refactorer", include_str!("../../templates/refactorer.md")),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::agent::AgentMode;
+
+    #[test]
+    fn test_parse_valid_template() {
+        let content = r#"+++
+description = "Test template"
+mode = "headless"
+permission_mode = "plan"
+allowed_tools = ["Read", "Grep"]
+disallowed_tools = ["Edit"]
++++
+
+You are a test agent. Do test things."#;
+
+        let t = AgentTemplate::parse("test", content).unwrap();
+        assert_eq!(t.name, "test");
+        assert_eq!(t.description, "Test template");
+        assert_eq!(t.mode, AgentMode::Headless);
+        assert_eq!(t.allowed_tools, vec!["Read", "Grep"]);
+        assert_eq!(t.disallowed_tools, vec!["Edit"]);
+        assert_eq!(t.permission_mode, Some("plan".into()));
+        assert!(t.system_prompt.contains("test agent"));
+    }
+
+    #[test]
+    fn test_parse_interactive_mode() {
+        let content = r#"+++
+description = "Interactive agent"
+mode = "interactive"
++++
+
+Do things interactively."#;
+
+        let t = AgentTemplate::parse("interactive", content).unwrap();
+        assert_eq!(t.mode, AgentMode::Interactive);
+        assert!(t.allowed_tools.is_empty());
+        assert!(t.disallowed_tools.is_empty());
+        assert!(t.permission_mode.is_none());
+    }
+
+    #[test]
+    fn test_parse_missing_frontmatter() {
+        let content = "# No frontmatter here\nJust markdown.";
+        assert!(AgentTemplate::parse("bad", content).is_err());
+    }
+
+    #[test]
+    fn test_parse_invalid_toml() {
+        let content = "+++\nnot = [valid toml\n+++\nBody";
+        assert!(AgentTemplate::parse("bad", content).is_err());
+    }
+
+    #[test]
+    fn test_all_builtins_parse() {
+        for (name, content) in BUILTIN_TEMPLATES {
+            let result = AgentTemplate::parse(name, content);
+            assert!(result.is_ok(), "Built-in template '{name}' failed to parse: {:?}", result.err());
+        }
+    }
+
+    #[test]
+    fn test_load_all_includes_builtins() {
+        let empty_dirs: &[&str] = &[];
+        let templates = AgentTemplate::load_all(empty_dirs);
+        assert_eq!(templates.len(), 5);
+        let names: Vec<_> = templates.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"planner"));
+        assert!(names.contains(&"implementer"));
+        assert!(names.contains(&"reviewer"));
+        assert!(names.contains(&"tester"));
+        assert!(names.contains(&"refactorer"));
+    }
+
+    #[test]
+    fn test_load_by_name_builtin() {
+        let empty_dirs: &[&str] = &[];
+        let t = AgentTemplate::load("reviewer", empty_dirs).unwrap();
+        assert_eq!(t.name, "reviewer");
+        assert!(!t.system_prompt.is_empty());
+    }
+
+    #[test]
+    fn test_load_by_name_not_found() {
+        let empty_dirs: &[&str] = &[];
+        assert!(AgentTemplate::load("nonexistent", empty_dirs).is_err());
+    }
+}

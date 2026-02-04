@@ -1,5 +1,6 @@
 use crate::error::ForgeError;
 use tokio::process::Command;
+use tracing::{debug, warn};
 
 /// All tmux operations. Shells out to `tmux` CLI.
 pub struct TmuxController;
@@ -31,8 +32,10 @@ impl TmuxController {
     /// Create the forge tmux session if it doesn't exist
     pub async fn ensure_session(session_name: &str) -> Result<(), ForgeError> {
         if Self::session_exists(session_name).await? {
+            debug!(session = session_name, "tmux session already exists");
             return Ok(());
         }
+        debug!(session = session_name, "creating tmux session");
         run_tmux(&["new-session", "-d", "-s", session_name, "-x", "200", "-y", "50"]).await
     }
 
@@ -168,6 +171,7 @@ async fn run_tmux(args: &[&str]) -> Result<(), ForgeError> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         // Ignore "no server running" errors for has-session checks
         if !stderr.contains("no server running") && !stderr.contains("session not found") {
+            warn!(args = ?args, stderr = %stderr, "tmux command failed");
             return Err(ForgeError::Tmux(stderr.to_string()));
         }
     }

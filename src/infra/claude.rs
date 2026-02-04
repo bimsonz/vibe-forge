@@ -3,6 +3,7 @@ use crate::error::ForgeError;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio::process::Command;
+use tracing::{debug, error, info};
 
 /// Parsed JSON output from `claude -p --output-format json`
 #[derive(Debug, Serialize, Deserialize)]
@@ -100,18 +101,27 @@ pub async fn run_headless(
 
     cmd.arg(prompt);
 
+    debug!(working_dir = %working_dir.display(), "running headless claude agent");
     let output = cmd.output().await?;
 
     if !output.status.success() && output.stdout.is_empty() {
-        return Err(ForgeError::Claude(
-            String::from_utf8_lossy(&output.stderr).to_string(),
-        ));
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        error!(%stderr, "headless claude agent failed");
+        return Err(ForgeError::Claude(stderr));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: ClaudeJsonOutput = serde_json::from_str(&stdout).map_err(|e| {
+        error!(error = %e, "failed to parse claude JSON output");
         ForgeError::Claude(format!("Failed to parse claude output: {e}\nRaw: {stdout}"))
     })?;
+
+    info!(
+        duration_ms = parsed.duration_ms,
+        turns = parsed.num_turns,
+        success = !parsed.is_error,
+        "headless claude agent completed"
+    );
 
     Ok(parsed)
 }
