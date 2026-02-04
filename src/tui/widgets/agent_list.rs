@@ -60,8 +60,19 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
+    let title_style = if is_focused {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
     let block = Block::default()
-        .title(format!(" Agents ({}) ", agents.len()))
+        .title(Span::styled(
+            format!(" Agents ({}) ", agents.len()),
+            title_style,
+        ))
         .borders(Borders::ALL)
         .border_style(border_style);
 
@@ -72,15 +83,20 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(paragraph, area);
     } else {
         let mut list_state = ListState::default();
-        if is_focused {
-            list_state.select(Some(app.selected_agent));
-        }
+        // Always show selection so user knows which agent is selected
+        list_state.select(Some(app.selected_agent));
 
-        let list = List::new(items).block(block).highlight_style(
+        let highlight = if is_focused {
             Style::default()
                 .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        );
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        };
+
+        let list = List::new(items).block(block).highlight_style(highlight);
 
         f.render_stateful_widget(list, area, &mut list_state);
     }

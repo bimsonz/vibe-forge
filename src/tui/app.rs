@@ -18,7 +18,6 @@ pub struct App {
     pub input_label: String,
     pub notifications: VecDeque<Notification>,
     pub output_scroll: u16,
-    pub should_quit: bool,
     pub last_refresh: Instant,
 }
 
@@ -34,7 +33,8 @@ pub enum InputMode {
     Normal,
     NewSession,
     SpawnAgent,
-    ConfirmKill,
+    ConfirmKillSession,
+    ConfirmKillAgent,
 }
 
 pub struct Notification {
@@ -70,7 +70,6 @@ impl App {
             input_label: String::new(),
             notifications: VecDeque::with_capacity(10),
             output_scroll: 0,
-            should_quit: false,
             last_refresh: Instant::now(),
         }
     }

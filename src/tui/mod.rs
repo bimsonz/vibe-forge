@@ -146,8 +146,8 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
     let body_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(25), // session list
-            Constraint::Percentage(75), // detail area
+            Constraint::Length(28), // session list (fixed width)
+            Constraint::Min(30),   // detail area (fills remaining)
         ])
         .split(main_chunks[1]);
 
@@ -158,9 +158,9 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
     let right_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8),  // session detail
-            Constraint::Length(8),  // agent list
-            Constraint::Min(4),    // output viewer
+            Constraint::Length(8), // session detail
+            Constraint::Length(8), // agent list
+            Constraint::Min(4),   // output viewer
         ])
         .split(body_chunks[1]);
 
@@ -203,7 +203,8 @@ async fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> an
         InputMode::Normal => handle_normal_key(app, code, modifiers).await,
         InputMode::NewSession => handle_input_key(app, code).await,
         InputMode::SpawnAgent => handle_input_key(app, code).await,
-        InputMode::ConfirmKill => handle_confirm_key(app, code).await,
+        InputMode::ConfirmKillSession => handle_confirm_kill_session(app, code).await,
+        InputMode::ConfirmKillAgent => handle_confirm_kill_agent(app, code).await,
     }
 }
 
@@ -278,6 +279,22 @@ async fn handle_normal_key(
             };
         }
 
+        // Enter = primary action for focused panel
+        KeyCode::Enter => {
+            match app.focus {
+                Focus::SessionList => {
+                    // Attach to session
+                    do_attach(app).await?;
+                }
+                Focus::AgentList => {
+                    // Focus output viewer to see agent's output
+                    app.focus = Focus::OutputViewer;
+                    app.output_scroll = 0;
+                }
+                Focus::OutputViewer => {}
+            }
+        }
+
         // New session
         KeyCode::Char('n') => {
             app.input_mode = InputMode::NewSession;
@@ -296,32 +313,26 @@ async fn handle_normal_key(
             }
         }
 
-        // Kill session
-        KeyCode::Char('K') => {
-            if app.selected_session().is_some() {
-                app.input_mode = InputMode::ConfirmKill;
+        // Kill - context-sensitive based on focus
+        KeyCode::Char('K') | KeyCode::Char('x') => {
+            match app.focus {
+                Focus::SessionList => {
+                    if app.selected_session().is_some() {
+                        app.input_mode = InputMode::ConfirmKillSession;
+                    }
+                }
+                Focus::AgentList => {
+                    if app.selected_agent().is_some() {
+                        app.input_mode = InputMode::ConfirmKillAgent;
+                    }
+                }
+                Focus::OutputViewer => {}
             }
         }
 
         // Attach to session
         KeyCode::Char('a') => {
-            if let Some(session) = app.selected_session() {
-                let session_name = session.name.clone();
-                let tmux_session = app.state.tmux_session_name.clone();
-
-                // Restore terminal before attaching
-                disable_raw_mode()?;
-                execute!(io::stdout(), LeaveAlternateScreen)?;
-
-                let tmux_target = format!("{tmux_session}:{session_name}");
-                let _ = crate::infra::tmux::TmuxController::select_window(&tmux_target).await;
-                let _ = crate::infra::tmux::TmuxController::attach(&tmux_session).await;
-
-                // Re-setup terminal after detach
-                enable_raw_mode()?;
-                execute!(io::stdout(), EnterAlternateScreen)?;
-                app.refresh_state().await;
-            }
+            do_attach(app).await?;
         }
 
         // Copy agent output
@@ -340,6 +351,8 @@ async fn handle_normal_key(
                 } else {
                     app.push_notification("No output to copy".into(), NotifyLevel::Error);
                 }
+            } else {
+                app.push_notification("No agent selected".into(), NotifyLevel::Error);
             }
         }
 
@@ -353,6 +366,53 @@ async fn handle_normal_key(
     }
 
     Ok(false)
+}
+
+/// Attach to the selected session's tmux window
+async fn do_attach(app: &mut App) -> anyhow::Result<()> {
+    if let Some(session) = app.selected_session() {
+        let session_name = session.name.clone();
+        let tmux_session = app.state.tmux_session_name.clone();
+
+        // Check if tmux session exists first
+        let exists = crate::infra::tmux::TmuxController::session_exists(&tmux_session)
+            .await
+            .unwrap_or(false);
+        if !exists {
+            app.push_notification(
+                format!("tmux session '{tmux_session}' not running"),
+                NotifyLevel::Error,
+            );
+            return Ok(());
+        }
+
+        // Restore terminal before attaching
+        disable_raw_mode()?;
+        execute!(io::stdout(), LeaveAlternateScreen)?;
+
+        let tmux_target = format!("{tmux_session}:{session_name}");
+        let select_result = crate::infra::tmux::TmuxController::select_window(&tmux_target).await;
+        if select_result.is_err() {
+            // Re-setup terminal and show error
+            enable_raw_mode()?;
+            execute!(io::stdout(), EnterAlternateScreen)?;
+            app.push_notification(
+                format!("Window '{session_name}' not found in tmux"),
+                NotifyLevel::Error,
+            );
+            return Ok(());
+        }
+
+        let _ = crate::infra::tmux::TmuxController::attach(&tmux_session).await;
+
+        // Re-setup terminal after detach
+        enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen)?;
+        app.refresh_state().await;
+    } else {
+        app.push_notification("No session selected".into(), NotifyLevel::Error);
+    }
+    Ok(())
 }
 
 async fn handle_input_key(app: &mut App, code: KeyCode) -> anyhow::Result<bool> {
@@ -433,7 +493,7 @@ async fn handle_input_key(app: &mut App, code: KeyCode) -> anyhow::Result<bool> 
     Ok(false)
 }
 
-async fn handle_confirm_key(app: &mut App, code: KeyCode) -> anyhow::Result<bool> {
+async fn handle_confirm_kill_session(app: &mut App, code: KeyCode) -> anyhow::Result<bool> {
     match code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             if let Some(session) = app.selected_session() {
@@ -453,6 +513,7 @@ async fn handle_confirm_key(app: &mut App, code: KeyCode) -> anyhow::Result<bool
                         if app.selected_session >= app.visible_session_count().saturating_sub(1) {
                             app.selected_session = app.visible_session_count().saturating_sub(1);
                         }
+                        app.selected_agent = 0;
                         app.push_notification(
                             format!("Session '{name}' killed"),
                             NotifyLevel::Success,
@@ -462,6 +523,46 @@ async fn handle_confirm_key(app: &mut App, code: KeyCode) -> anyhow::Result<bool
                         app.push_notification(format!("Error: {e}"), NotifyLevel::Error);
                     }
                 }
+            }
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            app.input_mode = InputMode::Normal;
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+async fn handle_confirm_kill_agent(app: &mut App, code: KeyCode) -> anyhow::Result<bool> {
+    match code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            if let Some(agent) = app.selected_agent() {
+                let agent_id = agent.id;
+                let agent_name = agent.name.clone();
+                app.input_mode = InputMode::Normal;
+
+                // Kill the agent's process if it has a tmux pane
+                if let Some(ref pane) = app.selected_agent().and_then(|a| a.tmux_pane.clone()) {
+                    let _ = crate::infra::tmux::TmuxController::kill_pane(pane).await;
+                }
+
+                // Update agent status to Failed
+                if let Some(agent) = app.state.find_agent_by_id_mut(agent_id) {
+                    agent.status = AgentStatus::Failed("Killed by user".into());
+                    agent.completed_at = Some(chrono::Utc::now());
+                }
+                app.state_manager.save(&app.state).await.ok();
+
+                // Adjust selection
+                let agent_count = app.selected_session_agents().len();
+                if agent_count > 0 && app.selected_agent >= agent_count {
+                    app.selected_agent = agent_count - 1;
+                }
+
+                app.push_notification(
+                    format!("Agent '{agent_name}' killed"),
+                    NotifyLevel::Success,
+                );
             }
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {

@@ -14,8 +14,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         .sessions
         .iter()
         .filter(|s| !matches!(s.status, SessionStatus::Archived))
-        .enumerate()
-        .map(|(i, session)| {
+        .map(|session| {
             let icon = match &session.status {
                 SessionStatus::Active => "●",
                 SessionStatus::Creating => "◐",
@@ -44,11 +43,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(format!(" {icon} "), Style::default().fg(icon_color)),
                 Span::styled(
                     format!("{}{}", session.name, agent_suffix),
-                    if i == app.selected_session {
-                        Style::default().add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    },
+                    Style::default(),
                 ),
             ]);
 
@@ -62,22 +57,36 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
+    let title_style = if is_focused {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
     let title = format!(" Sessions ({}) ", app.visible_session_count());
     let block = Block::default()
-        .title(title)
+        .title(Span::styled(title, title_style))
         .borders(Borders::ALL)
         .border_style(border_style);
 
     let mut list_state = ListState::default();
     list_state.select(Some(app.selected_session));
 
+    let highlight = if is_focused {
+        Style::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    };
+
     let list = List::new(sessions)
         .block(block)
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        );
+        .highlight_style(highlight);
 
     f.render_stateful_widget(list, area, &mut list_state);
 }
