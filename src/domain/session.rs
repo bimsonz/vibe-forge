@@ -20,6 +20,9 @@ pub struct Session {
     pub updated_at: DateTime<Utc>,
     pub agents: Vec<Uuid>,
     pub metadata: SessionMetadata,
+    /// True for the permanent workspace-root session. Cannot be killed.
+    #[serde(default)]
+    pub is_main: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -70,6 +73,7 @@ impl Session {
             updated_at: now,
             agents: vec![],
             metadata: SessionMetadata::default(),
+            is_main: false,
         }
     }
 

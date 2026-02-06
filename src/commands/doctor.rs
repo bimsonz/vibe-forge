@@ -4,7 +4,7 @@ use crate::infra::{claude, gh, state::StateManager, tmux::TmuxController};
 use std::path::Path;
 
 pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
-    println!("forge doctor: checking workspace health\n");
+    println!("vibe doctor: checking workspace health\n");
     let mut issues = 0;
     let mut fixed = 0;
 
@@ -36,7 +36,7 @@ pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
     // 2. Check forge state
     let state_manager = StateManager::new(workspace_root);
     if !state_manager.is_initialized() {
-        println!("\n  State: NOT INITIALIZED - run `forge init`");
+        println!("\n  State: NOT INITIALIZED - run `vibe init`");
         issues += 1;
         println!("\n{issues} issue(s) found.");
         return Ok(());

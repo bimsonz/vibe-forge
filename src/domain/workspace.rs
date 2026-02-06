@@ -15,7 +15,7 @@ pub struct Workspace {
     pub worktree_base_dir: PathBuf,
 }
 
-/// Persisted state for a workspace: .forge/workspace.json
+/// Persisted state for a workspace: .vibe/workspace.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceState {
     pub workspace: Workspace,

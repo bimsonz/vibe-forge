@@ -4,6 +4,7 @@ use crate::domain::template::AgentTemplate;
 use crate::error::ForgeError;
 use crate::infra::{claude, git, state::StateManager, tmux::TmuxController};
 use std::path::Path;
+use tracing::info;
 
 pub async fn execute(
     workspace_root: &Path,
@@ -30,7 +31,7 @@ pub async fn execute(
     let base_ref = base.as_deref();
     let worktree_base_dir = config.worktree_base_dir(workspace_root);
 
-    println!("Creating session '{name}'...");
+    info!(session = %name, "creating session");
 
     // Create git worktree
     let worktree = git::create_worktree(
@@ -40,7 +41,7 @@ pub async fn execute(
         &worktree_base_dir,
     )
     .await?;
-    println!("  Worktree: {}", worktree.path.display());
+    info!(worktree = %worktree.path.display(), "worktree created");
 
     // Ensure tmux session exists
     TmuxController::ensure_session(&state.tmux_session_name).await?;
@@ -52,7 +53,11 @@ pub async fn execute(
         worktree.path.to_str().unwrap_or("."),
     )
     .await?;
-    println!("  tmux window: {name}");
+    info!(window = %name, "tmux window created");
+
+    // Lock the window name so tmux doesn't auto-rename it when Claude starts
+    let window_target = format!("{}:{}", state.tmux_session_name, name);
+    let _ = TmuxController::disable_auto_rename_for(&window_target).await;
 
     // Create session record
     let mut session = Session::new(
@@ -91,7 +96,7 @@ pub async fn execute(
         );
         TmuxController::send_keys(&tmux_target, &cmd).await?;
         session.status = SessionStatus::Active;
-        println!("  Started headless claude session");
+        info!("started headless claude session");
     } else {
         // Start interactive claude
         let tmux_target = format!("{}:{}", state.tmux_session_name, name);
@@ -105,14 +110,13 @@ pub async fn execute(
         );
         TmuxController::send_keys(&tmux_target, &cmd).await?;
         session.status = SessionStatus::Active;
-        println!("  Started interactive claude session");
+        info!("started interactive claude session");
     }
 
     state.sessions.push(session);
     state_manager.save(&state).await?;
 
-    println!("\nSession '{name}' is ready.");
-    println!("  Run `forge attach {name}` to switch to it");
+    info!(session = %name, "session is ready");
 
     Ok(())
 }

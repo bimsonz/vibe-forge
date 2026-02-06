@@ -8,7 +8,7 @@ pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
     let state_manager = StateManager::new(workspace_root);
 
     if state_manager.is_initialized() {
-        println!("Forge is already initialized in this workspace.");
+        println!("Vibe is already initialized in this workspace.");
         return Ok(());
     }
 
@@ -46,9 +46,9 @@ pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
     // Save initial state
     state_manager.save(&state).await?;
 
-    println!("Forge initialized in {}", workspace_root.display());
-    println!("  .forge/ directory created");
-    println!("  Run `forge new <name>` to create your first session");
+    println!("Vibe initialized in {}", workspace_root.display());
+    println!("  .vibe/ directory created");
+    println!("  Run `vibe new <name>` to create your first session");
 
     Ok(())
 }

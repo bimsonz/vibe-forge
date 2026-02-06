@@ -1,12 +1,12 @@
 [package]
-name = "forge"
+name = "vibe"
 version = "0.1.0"
 edition = "2024"
 description = "Multi-agent Claude Code orchestrator with TUI dashboard"
 license = "MIT"
 
 [[bin]]
-name = "forge"
+name = "vibe"
 path = "src/main.rs"
 
 [dependencies]

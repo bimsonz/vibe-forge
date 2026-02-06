@@ -2,7 +2,7 @@ use crate::error::ForgeError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Global config: ~/.config/forge/config.toml
+/// Global config: ~/.config/vibe/config.toml
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GlobalConfig {
@@ -18,8 +18,8 @@ pub struct GlobalConfig {
 impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
-            tmux_session_prefix: "forge-".into(),
-            worktree_suffix: "-forge-".into(),
+            tmux_session_prefix: "vibe-".into(),
+            worktree_suffix: "-vibe-".into(),
             claude_extra_args: vec![],
             template_dirs: vec![],
             clipboard_on_complete: true,
@@ -29,7 +29,7 @@ impl Default for GlobalConfig {
     }
 }
 
-/// Workspace config: .forge/config.toml (project-specific overrides)
+/// Workspace config: .vibe/config.toml (project-specific overrides)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorkspaceConfig {
@@ -69,7 +69,7 @@ impl MergedConfig {
         let mut dirs = vec![];
 
         // Workspace templates (highest priority)
-        let ws_templates = workspace_root.join(".forge").join("templates");
+        let ws_templates = workspace_root.join(".vibe").join("templates");
         if ws_templates.exists() {
             dirs.push(ws_templates);
         }
@@ -99,8 +99,8 @@ impl MergedConfig {
 /// Load and merge configuration from all sources.
 ///
 /// Resolution order:
-/// 1. .forge/config.toml (workspace)
-/// 2. ~/.config/forge/config.toml (global)
+/// 1. .vibe/config.toml (workspace)
+/// 2. ~/.config/vibe/config.toml (global)
 /// 3. Built-in defaults
 pub fn load_config(workspace_root: Option<&Path>) -> Result<MergedConfig, ForgeError> {
     let global_config_dir = global_config_dir();
@@ -118,7 +118,7 @@ pub fn load_config(workspace_root: Option<&Path>) -> Result<MergedConfig, ForgeE
 
     // Load workspace config
     let workspace = if let Some(root) = workspace_root {
-        let ws_config_path = root.join(".forge").join("config.toml");
+        let ws_config_path = root.join(".vibe").join("config.toml");
         if ws_config_path.exists() {
             let content = std::fs::read_to_string(&ws_config_path)
                 .map_err(|e| ForgeError::Config(format!("Failed to read workspace config: {e}")))?;
@@ -141,7 +141,7 @@ pub fn load_config(workspace_root: Option<&Path>) -> Result<MergedConfig, ForgeE
 pub fn global_config_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("~/.config"))
-        .join("forge")
+        .join("vibe")
 }
 
 /// Ensure global config directory exists

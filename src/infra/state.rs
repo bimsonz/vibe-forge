@@ -6,46 +6,46 @@ use tokio::io::AsyncWriteExt;
 use tracing::{debug, info};
 
 pub struct StateManager {
-    forge_dir: PathBuf,
+    vibe_dir: PathBuf,
     state_file: PathBuf,
 }
 
 impl StateManager {
     pub fn new(workspace_root: &Path) -> Self {
-        let forge_dir = workspace_root.join(".forge");
-        let state_file = forge_dir.join("workspace.json");
+        let vibe_dir = workspace_root.join(".vibe");
+        let state_file = vibe_dir.join("workspace.json");
         Self {
-            forge_dir,
+            vibe_dir,
             state_file,
         }
     }
 
-    pub fn forge_dir(&self) -> &Path {
-        &self.forge_dir
+    pub fn vibe_dir(&self) -> &Path {
+        &self.vibe_dir
     }
 
     pub fn agents_dir(&self) -> PathBuf {
-        self.forge_dir.join("agents")
+        self.vibe_dir.join("agents")
     }
 
     pub fn plans_dir(&self) -> PathBuf {
-        self.forge_dir.join("plans")
+        self.vibe_dir.join("plans")
     }
 
-    /// Initialize .forge directory structure
+    /// Initialize .vibe directory structure
     pub async fn init(&self) -> Result<(), ForgeError> {
-        info!(dir = %self.forge_dir.display(), "initializing .forge directory");
-        fs::create_dir_all(&self.forge_dir).await?;
-        fs::create_dir_all(self.forge_dir.join("agents")).await?;
-        fs::create_dir_all(self.forge_dir.join("plans")).await?;
-        fs::create_dir_all(self.forge_dir.join("templates")).await?;
+        info!(dir = %self.vibe_dir.display(), "initializing .vibe directory");
+        fs::create_dir_all(&self.vibe_dir).await?;
+        fs::create_dir_all(self.vibe_dir.join("agents")).await?;
+        fs::create_dir_all(self.vibe_dir.join("plans")).await?;
+        fs::create_dir_all(self.vibe_dir.join("templates")).await?;
         self.ensure_gitignore().await?;
         Ok(())
     }
 
     /// Check if forge is initialized
     pub fn is_initialized(&self) -> bool {
-        self.forge_dir.exists() && self.state_file.exists()
+        self.vibe_dir.exists() && self.state_file.exists()
     }
 
     /// Load state from disk
@@ -74,7 +74,7 @@ impl StateManager {
         Ok(())
     }
 
-    /// Save agent output to .forge/agents/{id}/
+    /// Save agent output to .vibe/agents/{id}/
     pub async fn save_agent_output(
         &self,
         agent_id: &uuid::Uuid,
@@ -89,23 +89,23 @@ impl StateManager {
 
     async fn ensure_gitignore(&self) -> Result<(), ForgeError> {
         let gitignore = self
-            .forge_dir
+            .vibe_dir
             .parent()
-            .expect("forge_dir has a parent")
+            .expect("vibe_dir has a parent")
             .join(".gitignore");
 
         if gitignore.exists() {
             let content = fs::read_to_string(&gitignore).await?;
-            if !content.contains(".forge/") {
+            if !content.contains(".vibe/") {
                 let mut file = fs::OpenOptions::new()
                     .append(true)
                     .open(&gitignore)
                     .await?;
-                file.write_all(b"\n# Forge agent orchestrator\n.forge/\n")
+                file.write_all(b"\n# Vibe agent orchestrator\n.vibe/\n")
                     .await?;
             }
         } else {
-            fs::write(&gitignore, "# Forge agent orchestrator\n.forge/\n").await?;
+            fs::write(&gitignore, "# Vibe agent orchestrator\n.vibe/\n").await?;
         }
         Ok(())
     }

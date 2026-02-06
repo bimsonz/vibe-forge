@@ -951,35 +951,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
-name = "forge"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "assert_cmd",
- "chrono",
- "clap",
- "crossterm 0.28.1",
- "dirs",
- "git2",
- "notify",
- "notify-rust",
- "predicates",
- "ratatui",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "uuid",
- "which",
-]
-
-[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3058,6 +3029,35 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vibe"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "assert_cmd",
+ "chrono",
+ "clap",
+ "crossterm 0.28.1",
+ "dirs",
+ "git2",
+ "notify",
+ "notify-rust",
+ "predicates",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "uuid",
+ "which",
+]
 
 [[package]]
 name = "vtparse"

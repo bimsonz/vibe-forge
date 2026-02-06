@@ -1,32 +1,44 @@
-use crate::domain::agent::AgentStatus;
+use crate::domain::agent::{AgentMode, AgentStatus};
 use crate::tui::app::{App, Focus};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
+use ratatui::widgets::{List, ListItem, ListState};
 use ratatui::Frame;
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == Focus::AgentList;
     let agents = app.selected_session_agents();
+    let scolor = app.current_session_color();
 
     let items: Vec<ListItem> = agents
         .iter()
         .map(|agent| {
-            let icon = match &agent.status {
-                AgentStatus::Queued => "○",
-                AgentStatus::Running => "⟳",
-                AgentStatus::Completed => "✓",
-                AgentStatus::Failed(_) => "✗",
-                AgentStatus::Ingested => "✓",
-            };
-
-            let icon_color = match &agent.status {
-                AgentStatus::Queued => Color::DarkGray,
-                AgentStatus::Running => Color::Yellow,
-                AgentStatus::Completed => Color::Green,
-                AgentStatus::Failed(_) => Color::Red,
-                AgentStatus::Ingested => Color::Cyan,
+            let (icon, icon_color) = if agent.mode == AgentMode::Shell {
+                (
+                    "$",
+                    if agent.is_running() {
+                        Color::Green
+                    } else {
+                        Color::DarkGray
+                    },
+                )
+            } else {
+                let ic = match &agent.status {
+                    AgentStatus::Queued => "○",
+                    AgentStatus::Running => "⟳",
+                    AgentStatus::Completed => "✓",
+                    AgentStatus::Failed(_) => "✗",
+                    AgentStatus::Ingested => "✓",
+                };
+                let ic_color = match &agent.status {
+                    AgentStatus::Queued => Color::DarkGray,
+                    AgentStatus::Running => Color::Yellow,
+                    AgentStatus::Completed => scolor,
+                    AgentStatus::Failed(_) => Color::Red,
+                    AgentStatus::Ingested => scolor,
+                };
+                (ic, ic_color)
             };
 
             let duration = agent
@@ -40,9 +52,9 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(&agent.name, Style::default()),
                 Span::styled(
                     format!(" ({})", agent.mode),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Color::Gray),
                 ),
-                Span::styled(duration, Style::default().fg(Color::DarkGray)),
+                Span::styled(duration, Style::default().fg(Color::Gray)),
                 Span::raw("  "),
                 Span::styled(
                     agent.status.to_string(),
@@ -54,36 +66,16 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let border_style = if is_focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let title_style = if is_focused {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let block = Block::default()
-        .title(Span::styled(
-            format!(" Agents ({}) ", agents.len()),
-            title_style,
-        ))
-        .borders(Borders::ALL)
-        .border_style(border_style);
+    let title = format!("Agents ({})", agents.len());
+    let block = super::panel_block(&title, scolor, is_focused);
 
     if items.is_empty() {
         let paragraph = ratatui::widgets::Paragraph::new("  No agents. Press 's' to spawn one.")
             .block(block)
-            .style(Style::default().fg(Color::DarkGray));
+            .style(Style::default().fg(Color::Gray));
         f.render_widget(paragraph, area);
     } else {
         let mut list_state = ListState::default();
-        // Always show selection so user knows which agent is selected
         list_state.select(Some(app.selected_agent));
 
         let highlight = if is_focused {

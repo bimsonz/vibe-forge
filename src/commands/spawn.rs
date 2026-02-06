@@ -4,12 +4,14 @@ use crate::domain::template::AgentTemplate;
 use crate::error::ForgeError;
 use crate::infra::{claude, state::StateManager, tmux::TmuxController};
 use std::path::Path;
+use tracing::{error, info};
 
 pub async fn execute(
     workspace_root: &Path,
     prompt: String,
     session_name: Option<String>,
     template_name: Option<String>,
+    system_prompt_override: Option<String>,
     interactive: bool,
     config: &MergedConfig,
 ) -> Result<(), ForgeError> {
@@ -67,14 +69,19 @@ pub async fn execute(
         agents_dir,
     );
 
-    if let Some(ref tmpl) = template {
+    // Apply system prompt: explicit override > template > none
+    if let Some(ref sp) = system_prompt_override {
+        agent.system_prompt = Some(sp.clone());
+    } else if let Some(ref tmpl) = template {
         agent.template = Some(tmpl.name.clone());
         agent.system_prompt = Some(tmpl.system_prompt.clone());
     }
 
-    println!(
-        "Spawning {} agent '{}' for session '{}'...",
-        mode, agent_name, parent_name
+    info!(
+        mode = %mode,
+        agent = %agent_name,
+        session = %parent_name,
+        "spawning agent"
     );
 
     match mode {
@@ -83,7 +90,6 @@ pub async fn execute(
             let agent_id = agent.id;
             let system_prompt = agent.system_prompt.clone();
             let output_file = agent.output_file.clone();
-            let output_file_display = output_file.display().to_string();
             let allowed_tools = template
                 .as_ref()
                 .map(|t| t.allowed_tools.clone())
@@ -103,6 +109,8 @@ pub async fn execute(
                 parent.agents.push(agent_id);
             }
             state_manager.save(&state).await?;
+
+            info!(output = %output_file.display(), "agent running in background");
 
             // Spawn headless in background
             tokio::spawn(async move {
@@ -125,16 +133,13 @@ pub async fn execute(
                         }
                         let json = serde_json::to_string_pretty(&output).unwrap_or_default();
                         let _ = tokio::fs::write(&output_file, &json).await;
-                        println!("Agent '{}' completed.", agent_name);
+                        info!(agent = %agent_name, "agent completed");
                     }
                     Err(e) => {
-                        eprintln!("Agent '{}' failed: {}", agent_name, e);
+                        error!(agent = %agent_name, error = %e, "agent failed");
                     }
                 }
             });
-
-            println!("  Running in background. Output will be saved to:");
-            println!("  {output_file_display}");
         }
         AgentMode::Interactive => {
             let tmux_target = format!("{}:{}", state.tmux_session_name, parent_name);
@@ -171,7 +176,11 @@ pub async fn execute(
             }
             state_manager.save(&state).await?;
 
-            println!("  Interactive agent started in tmux pane: {pane_id}");
+            info!(pane = %pane_id, "interactive agent started");
+        }
+        AgentMode::Shell => {
+            // Shells are created directly by the TUI, not via spawn command.
+            return Err(ForgeError::Tmux("Shell agents cannot be spawned via CLI".into()));
         }
     }
 

@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "forge", version, about = "Multi-agent Claude Code orchestrator")]
+#[command(name = "vibe", version, about = "Multi-agent Claude Code orchestrator")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -17,7 +17,7 @@ pub enum Commands {
     /// Launch the TUI dashboard (default when no subcommand given)
     Dashboard,
 
-    /// Initialize forge in current repository
+    /// Initialize vibe in current repository
     Init,
 
     /// Create a new session (worktree + tmux window + claude)
@@ -130,6 +130,7 @@ pub enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+
 }
 
 #[derive(Debug, Subcommand)]

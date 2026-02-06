@@ -47,7 +47,7 @@ pub enum ForgeError {
     #[error("Not a git repository")]
     NotGitRepo,
 
-    #[error("Forge not initialized. Run `forge init` first.")]
+    #[error("Vibe not initialized. Run `vibe init` first.")]
     NotInitialized,
 
     #[error("tmux not installed. Install with: brew install tmux")]

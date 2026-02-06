@@ -1,8 +1,8 @@
 use crate::config::MergedConfig;
-use crate::domain::session::SessionStatus;
 use crate::error::ForgeError;
 use crate::infra::{git, state::StateManager, tmux::TmuxController};
 use std::path::Path;
+use tracing::{info, warn};
 
 pub async fn execute(
     workspace_root: &Path,
@@ -18,11 +18,14 @@ pub async fn execute(
         .find_session_by_name_mut(&target)
         .ok_or_else(|| ForgeError::SessionNotFound(target.clone()))?;
 
+    if session.is_main {
+        return Err(ForgeError::User(
+            "Cannot kill the main session".into(),
+        ));
+    }
+
     if !force && session.is_active() {
-        println!(
-            "Session '{}' is active. Use --force to kill it anyway.",
-            target
-        );
+        warn!(session = %target, "session is active — use --force to kill it");
         return Ok(());
     }
 
@@ -30,30 +33,30 @@ pub async fn execute(
     let session_name = session.name.clone();
     let tmux_window = format!("{}:{}", state.tmux_session_name, session_name);
 
-    println!("Killing session '{session_name}'...");
+    info!(session = %session_name, "killing session");
 
     // Kill tmux window (best effort)
     let _ = TmuxController::kill_window(&tmux_window).await;
-    println!("  tmux window removed");
+    info!(session = %session_name, "tmux window removed");
 
     // Remove git worktree
     if worktree_path.exists() {
         match git::remove_worktree(workspace_root, &worktree_path, delete_branch).await {
-            Ok(()) => println!("  Worktree removed: {}", worktree_path.display()),
-            Err(e) => println!("  Warning: Failed to remove worktree: {e}"),
+            Ok(()) => info!(path = %worktree_path.display(), "worktree removed"),
+            Err(e) => warn!(error = %e, "failed to remove worktree"),
         }
     }
 
-    // Update session status
-    let session = state.find_session_by_name_mut(&target).unwrap();
-    session.status = SessionStatus::Archived;
-
-    // Remove associated agents
-    let session_id = session.id;
+    // Remove session and associated agents from state
+    let session_id = state
+        .find_session_by_name(&target)
+        .map(|s| s.id)
+        .unwrap();
     state.agents.retain(|a| a.parent_session != session_id);
+    state.sessions.retain(|s| s.id != session_id);
 
     state_manager.save(&state).await?;
 
-    println!("Session '{session_name}' killed and archived.");
+    info!(session = %session_name, "session killed and removed");
     Ok(())
 }

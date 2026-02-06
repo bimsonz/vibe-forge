@@ -38,7 +38,7 @@ pub fn remote_url(repo_root: &Path) -> Option<String> {
 
 /// Create a worktree for a new session.
 ///
-/// Naming convention: {repo_name}-forge-{short_id}
+/// Naming convention: {repo_name}-vibe-{short_id}
 pub async fn create_worktree(
     repo_root: &Path,
     branch_name: &str,
@@ -50,7 +50,7 @@ pub async fn create_worktree(
         .file_name()
         .unwrap_or_default()
         .to_string_lossy();
-    let worktree_dir_name = format!("{repo_name}-forge-{short_id}");
+    let worktree_dir_name = format!("{repo_name}-vibe-{short_id}");
     let worktree_path = worktree_base_dir.join(&worktree_dir_name);
 
     let base = base_ref.unwrap_or("HEAD");
@@ -150,7 +150,7 @@ pub async fn list_forge_worktrees(repo_root: &Path) -> Result<Vec<WorktreeInfo>,
         if let (Some(path), Some(branch)) = (path, branch) {
             if path
                 .file_name()
-                .is_some_and(|n| n.to_string_lossy().contains("-forge-"))
+                .is_some_and(|n| n.to_string_lossy().contains("-vibe-"))
             {
                 worktrees.push(WorktreeInfo { path, branch });
             }

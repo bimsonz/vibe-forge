@@ -1,44 +1,50 @@
 use crate::domain::agent::AgentStatus;
-use crate::tui::app::{App, Focus};
+use crate::tui::app::App;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-pub fn render(f: &mut Frame, app: &App, area: Rect) {
-    let is_focused = app.focus == Focus::OutputViewer;
+pub fn render_fullscreen(f: &mut Frame, app: &App, area: Rect) {
+    let scolor = app.current_session_color();
 
-    let border_style = if is_focused {
-        Style::default().fg(Color::Cyan)
+    let agent_title = if let Some(agent) = app.selected_agent() {
+        format!("Agent: {} [{}]", agent.name, agent.status)
     } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let title_style = if is_focused {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
+        "Agent Output".to_string()
     };
 
     let block = Block::default()
-        .title(Span::styled(" Output ", title_style))
+        .title(Span::styled(
+            format!(" \u{25b8} {} ", agent_title),
+            Style::default()
+                .fg(scolor)
+                .add_modifier(Modifier::BOLD),
+        ))
         .borders(Borders::ALL)
-        .border_style(border_style);
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(scolor));
 
-    // Show the selected agent's output, or context about what's happening
-    let output_text = if let Some(agent) = app.selected_agent() {
+    let output_text = build_output_text(app);
+
+    let paragraph = Paragraph::new(output_text)
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .scroll((app.output_scroll, 0));
+
+    f.render_widget(paragraph, area);
+}
+
+fn build_output_text(app: &App) -> String {
+    if let Some(agent) = app.selected_agent() {
         if let Some(ref result) = agent.result {
-            // Agent has output — show it
             result
                 .raw_result
                 .as_deref()
                 .unwrap_or(&result.summary)
                 .to_string()
         } else {
-            // No output yet — show prompt and status
             match &agent.status {
                 AgentStatus::Running => {
                     format!(
@@ -61,7 +67,6 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             }
         }
     } else {
-        // No agent selected — try fallback to most recently completed
         let agents = app.selected_session_agents();
         agents
             .iter()
@@ -73,15 +78,10 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                     .unwrap_or(&r.summary)
                     .to_string()
             })
-            .unwrap_or_else(|| "No output yet. Select an agent or press 's' to spawn one.".into())
-    };
-
-    let paragraph = Paragraph::new(output_text)
-        .block(block)
-        .wrap(Wrap { trim: false })
-        .scroll((app.output_scroll, 0));
-
-    f.render_widget(paragraph, area);
+            .unwrap_or_else(|| {
+                "No output yet. Select an agent or press 's' to spawn one.".into()
+            })
+    }
 }
 
 fn truncate(s: &str, max: usize) -> &str {

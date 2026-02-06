@@ -28,6 +28,7 @@ pub struct Agent {
 pub enum AgentMode {
     Headless,
     Interactive,
+    Shell,
 }
 
 impl std::fmt::Display for AgentMode {
@@ -35,6 +36,7 @@ impl std::fmt::Display for AgentMode {
         match self {
             Self::Headless => write!(f, "headless"),
             Self::Interactive => write!(f, "interactive"),
+            Self::Shell => write!(f, "shell"),
         }
     }
 }

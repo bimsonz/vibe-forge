@@ -21,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
         infra::git::find_repo_root(&cwd).ok()
     });
 
-    // Initialize tracing (log to .forge/forge.log if workspace exists)
+    // Initialize tracing (log to .vibe/vibe.log if workspace exists)
     let _guard = init_tracing(workspace_root.as_deref());
 
     // Preflight checks
@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
     info!(
         command = ?cli.command,
         workspace = ?workspace_root,
-        "forge started"
+        "vibe started"
     );
 
     match cli.command {
@@ -77,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
         }) => {
             let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
             let cfg = config::load_config(Some(&root))?;
-            commands::spawn::execute(&root, prompt, session, template, interactive, &cfg).await?;
+            commands::spawn::execute(&root, prompt, session, template, None, interactive, &cfg).await?;
         }
 
         Some(Commands::Status { json }) => {
@@ -162,6 +162,7 @@ async fn main() -> anyhow::Result<()> {
             let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
             commands::cleanup::execute(&root, all, dry_run).await?;
         }
+
     }
 
     Ok(())
@@ -184,13 +185,13 @@ fn init_tracing(
 ) -> Option<tracing_appender::non_blocking::WorkerGuard> {
     use tracing_subscriber::{fmt, EnvFilter};
 
-    let log_dir = workspace_root.map(|r| r.join(".forge"));
+    let log_dir = workspace_root.map(|r| r.join(".vibe"));
     let log_dir = match log_dir {
         Some(d) if d.exists() => d,
         _ => return None,
     };
 
-    let file_appender = tracing_appender::rolling::never(&log_dir, "forge.log");
+    let file_appender = tracing_appender::rolling::never(&log_dir, "vibe.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));

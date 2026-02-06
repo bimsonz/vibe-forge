@@ -13,7 +13,7 @@ pub async fn execute(workspace_root: &Path, json: bool) -> Result<(), ForgeError
         return Ok(());
     }
 
-    println!("Forge: {}", state.workspace.name);
+    println!("Vibe: {}", state.workspace.name);
     println!("  Root: {}", state.workspace.root.display());
     println!(
         "  tmux session: {}",
@@ -37,7 +37,7 @@ pub async fn execute(workspace_root: &Path, json: bool) -> Result<(), ForgeError
     println!();
 
     if state.sessions.is_empty() {
-        println!("No sessions. Run `forge new <name>` to create one.");
+        println!("No sessions. Run `vibe new <name>` to create one.");
         return Ok(());
     }
 
