@@ -18,6 +18,9 @@ pub struct GlobalConfig {
     pub dashboard_key: String,
     /// CSI sequence suffix for "overview" binding (default: "[33~")
     pub overview_key: String,
+    /// tmux escape-time in milliseconds (default: 100).
+    /// Higher values improve reliability over SSH at the cost of Escape key latency.
+    pub escape_time_ms: u32,
 }
 
 impl GlobalConfig {
@@ -80,6 +83,7 @@ impl Default for GlobalConfig {
             max_concurrent_agents: None,
             dashboard_key: "[29~".into(),
             overview_key: "[33~".into(),
+            escape_time_ms: 100,
         }
     }
 }

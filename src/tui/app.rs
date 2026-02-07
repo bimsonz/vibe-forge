@@ -30,6 +30,12 @@ pub struct App {
     pub overview_selected: usize,
     /// Last time overview captures were refreshed
     pub overview_last_capture: Instant,
+    /// Next tile index to refresh incrementally (round-robin)
+    pub overview_next_refresh: usize,
+    /// Next agent index to reconcile incrementally (round-robin)
+    pub reconcile_next_agent: usize,
+    /// Deferred actions queued by key handlers to avoid blocking the event loop
+    pub deferred_actions: VecDeque<DeferredAction>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +59,35 @@ pub enum InputMode {
     SelectTemplate,
     ConfirmKillSession,
     ConfirmKillAgent,
+}
+
+/// Actions queued by key handlers for processing outside the event drain loop.
+/// This prevents heavy async tmux operations from blocking keyboard input.
+pub enum DeferredAction {
+    OpenSession,
+    EnterOverview,
+    KillSession { name: String },
+    KillAgent {
+        agent_id: uuid::Uuid,
+        agent_name: String,
+        agent_mode: crate::domain::agent::AgentMode,
+        session_name: Option<String>,
+    },
+    OpenShell,
+    SpawnFromTemplate {
+        description: String,
+        session_name: Option<String>,
+        template_name: Option<String>,
+        system_prompt: Option<String>,
+        entry_name: String,
+    },
+    SpawnCustom {
+        prompt: String,
+        session_name: Option<String>,
+    },
+    CreateSession {
+        name: String,
+    },
 }
 
 pub struct AgentEntry {
@@ -137,6 +172,9 @@ impl App {
             overview_captures: vec![],
             overview_selected: 0,
             overview_last_capture: Instant::now(),
+            overview_next_refresh: 0,
+            reconcile_next_agent: 0,
+            deferred_actions: VecDeque::new(),
         }
     }
 
@@ -205,25 +243,42 @@ impl App {
             self.state = state;
         }
         self.last_refresh = Instant::now();
+        self.clamp_selection_indices();
     }
 
-    /// Reconcile state with tmux reality.
-    /// Validates that pane IDs in state actually exist, updates status if not.
-    pub async fn reconcile_tmux_state(&mut self) {
+    /// Ensure selection indices are within valid bounds after state changes.
+    /// Prevents out-of-bounds access when sessions/agents are added or removed
+    /// externally (e.g., by another vibe instance or CLI command).
+    pub fn clamp_selection_indices(&mut self) {
+        let session_count = self.visible_session_count();
+        if session_count == 0 {
+            self.selected_session = 0;
+            self.selected_agent = 0;
+        } else {
+            if self.selected_session >= session_count {
+                self.selected_session = session_count - 1;
+            }
+            let agent_count = self.selected_session_agents().len();
+            if agent_count == 0 {
+                self.selected_agent = 0;
+            } else if self.selected_agent >= agent_count {
+                self.selected_agent = agent_count - 1;
+            }
+        }
+    }
+
+    /// Full reconciliation of all agents — used at startup before the event loop.
+    pub async fn reconcile_tmux_state_full(&mut self) {
         use crate::domain::agent::AgentStatus;
         use crate::infra::tmux::TmuxController;
 
         let mut needs_save = false;
 
         for agent in &mut self.state.agents {
-            // Skip agents without panes or already done
             if agent.tmux_pane.is_none() || agent.is_done() {
                 continue;
             }
-
             let pane_id = agent.tmux_pane.as_ref().unwrap();
-
-            // Check if pane still exists
             if !TmuxController::pane_exists(pane_id).await {
                 tracing::info!(
                     agent = %agent.name,
@@ -240,6 +295,54 @@ impl App {
             if let Err(e) = self.state_manager.save(&self.state).await {
                 tracing::error!(error = %e, "failed to save state after reconciliation");
             }
+            self.clamp_selection_indices();
+        }
+    }
+
+    /// Incrementally reconcile ONE agent with tmux reality per call (round-robin).
+    /// Distributes pane_exists() checks across ticks instead of blocking the
+    /// event loop to check all agents at once.
+    pub async fn reconcile_tmux_state(&mut self) {
+        use crate::domain::agent::AgentStatus;
+        use crate::infra::tmux::TmuxController;
+
+        let agent_count = self.state.agents.len();
+        if agent_count == 0 {
+            self.reconcile_next_agent = 0;
+            return;
+        }
+
+        // Scan forward from the round-robin index to find the next agent that
+        // needs checking (has a pane and isn't done). Wrap around at most once.
+        let mut checked = 0;
+        while checked < agent_count {
+            let idx = self.reconcile_next_agent % agent_count;
+            self.reconcile_next_agent = idx + 1;
+            checked += 1;
+
+            let agent = &self.state.agents[idx];
+            if agent.tmux_pane.is_none() || agent.is_done() {
+                continue;
+            }
+
+            let pane_id = agent.tmux_pane.as_ref().unwrap().clone();
+
+            if !TmuxController::pane_exists(&pane_id).await {
+                tracing::info!(
+                    agent = %self.state.agents[idx].name,
+                    pane = %pane_id,
+                    "agent pane no longer exists, marking as failed"
+                );
+                self.state.agents[idx].status = AgentStatus::Failed("tmux pane lost".into());
+                self.state.agents[idx].tmux_pane = None;
+
+                if let Err(e) = self.state_manager.save(&self.state).await {
+                    tracing::error!(error = %e, "failed to save state after reconciliation");
+                }
+                self.clamp_selection_indices();
+            }
+            // Only check one agent per call
+            return;
         }
     }
 }

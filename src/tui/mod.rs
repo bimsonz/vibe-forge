@@ -1,7 +1,7 @@
 pub mod app;
 pub mod widgets;
 
-use app::{AgentEntry, AgentSource, App, Focus, InputMode, NotifyLevel, ViewMode};
+use app::{AgentEntry, AgentSource, App, DeferredAction, Focus, InputMode, NotifyLevel, ViewMode};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -25,6 +25,12 @@ use crate::infra::state::StateManager;
 use crate::infra::tmux::TmuxController;
 use crate::infra::watcher::{ForgeWatcher, WatcherEvent};
 use tokio::sync::mpsc;
+
+/// Result from the background nav-binding health checker.
+enum NavBindingStatus {
+    Restored,
+    Failed(String),
+}
 
 pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
     let state_manager = StateManager::new(&workspace_root);
@@ -64,7 +70,7 @@ pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
     if let Err(e) = TmuxController::disable_auto_rename_for(&format!("{}:dashboard", tmux_session)).await {
         tracing::warn!(error = %e, "failed to disable auto-rename");
     }
-    if let Err(e) = TmuxController::set_escape_time().await {
+    if let Err(e) = TmuxController::set_escape_time(app.config.global.escape_time_ms).await {
         tracing::error!(error = %e, "failed to set escape-time");
     }
     if let Err(e) = TmuxController::enable_extended_keys().await {
@@ -95,13 +101,63 @@ pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
     // Start all active session windows in background so they're ready
     start_background_sessions(&mut app).await;
 
-    // Reconcile state with tmux reality (validate pane IDs)
-    app.reconcile_tmux_state().await;
+    // Reconcile state with tmux reality (validate pane IDs) — full scan at startup
+    app.reconcile_tmux_state_full().await;
 
-    // Start file watcher for agent completion
-    let (watcher_tx, mut watcher_rx) = mpsc::unbounded_channel();
+    // Start file watcher for agent completion (bounded to prevent OOM)
+    let (watcher_tx, mut watcher_rx) = mpsc::channel(100);
     let agents_dir = workspace_root.join(".vibe").join("agents");
     let _watcher = ForgeWatcher::start(agents_dir, watcher_tx).ok();
+
+    // Background nav-binding health checker: runs every 3 seconds off the main
+    // event loop so verification + re-establishment never blocks key input.
+    let (nav_tx, mut nav_rx) = mpsc::unbounded_channel::<NavBindingStatus>();
+    {
+        let dashboard_key = app.config.global.dashboard_key.clone();
+        let overview_key = app.config.global.overview_key.clone();
+        let nav_tmux_session = tmux_session.clone();
+        let nav_workspace_root = workspace_root.clone();
+        let shutdown_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let nav_shutdown = shutdown_flag.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(3));
+            loop {
+                interval.tick().await;
+                if nav_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                let ok = TmuxController::verify_nav_bindings(
+                    &dashboard_key,
+                    &overview_key,
+                )
+                .await;
+                if !ok {
+                    tracing::warn!("nav bindings lost or corrupted, re-establishing");
+                    if TmuxController::is_nav_lock_stale(&nav_workspace_root).await {
+                        tracing::info!("reclaiming stale nav binding lock");
+                    }
+                    match TmuxController::setup_nav_bindings(
+                        &nav_tmux_session,
+                        &dashboard_key,
+                        &overview_key,
+                        Some(&nav_workspace_root),
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            let _ = nav_tx.send(NavBindingStatus::Restored);
+                        }
+                        Err(e) => {
+                            let _ = nav_tx.send(NavBindingStatus::Failed(e.to_string()));
+                        }
+                    }
+                }
+            }
+        });
+        // Store shutdown flag for later (signal handler will set it)
+        // We don't need to explicitly stop the task — it will be dropped with the runtime
+        let _ = shutdown_flag;
+    }
 
     // Signal handler: best-effort cleanup on SIGTERM/SIGHUP so bindings don't
     // persist after an unclean shutdown. SIGKILL can't be caught — stale PID
@@ -129,6 +185,12 @@ pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
 
             let _ = TmuxController::cleanup_nav_bindings(Some(&signal_workspace_root)).await;
             let _ = TmuxController::show_status_bar(&tmux_session).await;
+
+            // Restore terminal state immediately — the main loop may not get
+            // a chance to run its cleanup if the signal arrives during poll().
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+
             shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
         });
     }
@@ -144,52 +206,85 @@ pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
         // Draw
         terminal.draw(|f| draw(f, &app))?;
 
-        // Poll for events
+        // Poll and drain all buffered events (not just one per tick).
+        // This prevents key events from queuing behind resize/mouse events
+        // and reduces perceived input latency for rapid keypresses.
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if handle_key(&mut app, key.code, key.modifiers).await? {
+            let mut should_quit = false;
+            loop {
+                match event::read()? {
+                    Event::Key(key) => {
+                        if handle_key(&mut app, key.code, key.modifiers).await? {
+                            should_quit = true;
+                            break;
+                        }
+                    }
+                    Event::Resize(_, _) => {
+                        // Ratatui redraws on the next terminal.draw() call
+                        // which handles the new dimensions automatically.
+                        // Break the drain loop so we redraw immediately.
+                        break;
+                    }
+                    _ => {} // Mouse and other events — consume and continue
+                }
+                // Check for more immediately available events (zero-wait)
+                if !event::poll(Duration::ZERO)? {
                     break;
                 }
             }
+            if should_quit {
+                break;
+            }
         }
 
-        // Check for watcher events (non-blocking)
-        while let Ok(event) = watcher_rx.try_recv() {
-            match event {
-                WatcherEvent::AgentCompleted { agent_id, result } => {
-                    // Update agent in state
-                    if let Some(agent) = app.state.find_agent_by_id_mut(agent_id) {
-                        agent.status = AgentStatus::Completed;
-                        agent.completed_at = Some(chrono::Utc::now());
-                        agent.result = Some(result.clone());
-                    }
-                    if let Err(e) = app.state_manager.save(&app.state).await {
-                        tracing::error!(error = %e, "failed to save state after agent completion");
-                    }
+        // Check for watcher events (non-blocking, capped to avoid monopolizing loop)
+        for _ in 0..5 {
+            match watcher_rx.try_recv() {
+                Ok(event) => match event {
+                    WatcherEvent::AgentCompleted { agent_id, result } => {
+                        // Update agent in state
+                        if let Some(agent) = app.state.find_agent_by_id_mut(agent_id) {
+                            agent.status = AgentStatus::Completed;
+                            agent.completed_at = Some(chrono::Utc::now());
+                            agent.result = Some(result.clone());
+                        }
+                        if let Err(e) = app.state_manager.save(&app.state).await {
+                            tracing::error!(error = %e, "failed to save state after agent completion");
+                        }
 
-                    // Copy to clipboard
-                    if app.config.global.clipboard_on_complete {
-                        let text = result.raw_result.as_deref().unwrap_or(&result.summary);
-                        let _ = crate::infra::clipboard::copy_text(text);
-                    }
+                        // Copy to clipboard (non-blocking)
+                        if app.config.global.clipboard_on_complete {
+                            let text = result
+                                .raw_result
+                                .clone()
+                                .unwrap_or_else(|| result.summary.clone());
+                            tokio::task::spawn_blocking(move || {
+                                let _ = crate::infra::clipboard::copy_text(&text);
+                            });
+                        }
 
-                    // OS notification
-                    if app.config.global.notify_on_complete {
-                        let _ = notify_rust::Notification::new()
-                            .summary("Vibe: Agent completed")
-                            .body(&result.summary)
-                            .show();
-                    }
+                        // OS notification (non-blocking)
+                        if app.config.global.notify_on_complete {
+                            let summary = result.summary.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let _ = notify_rust::Notification::new()
+                                    .summary("Vibe: Agent completed")
+                                    .body(&summary)
+                                    .show();
+                            });
+                        }
 
-                    app.push_notification(
-                        "Agent completed — output copied to clipboard".into(),
-                        NotifyLevel::Success,
-                    );
-                }
-                WatcherEvent::AgentOutputWritten { .. } => {
-                    app.refresh_state().await;
-                }
+                        app.push_notification(
+                            "Agent completed — output copied to clipboard".into(),
+                            NotifyLevel::Success,
+                        );
+                    }
+                    WatcherEvent::AgentOutputWritten { .. } => {
+                        app.refresh_state().await;
+                    }
+                },
+                Err(_) => break,
             }
         }
 
@@ -200,42 +295,39 @@ pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
             // Periodic state refresh
             if app.last_refresh.elapsed() >= refresh_interval {
                 app.refresh_state().await;
-                app.reconcile_tmux_state().await;
+            }
 
-                // Deep-validate nav bindings (checks values + bind-key entries).
-                // Recovers from tmux conf reloads, other instances exiting, etc.
-                if !TmuxController::verify_nav_bindings(
-                    &app.config.global.dashboard_key,
-                    &app.config.global.overview_key,
-                ).await {
-                    tracing::warn!("nav bindings lost or corrupted, re-establishing");
+            // Process one deferred action per tick (keeps event loop responsive)
+            if let Some(action) = app.deferred_actions.pop_front() {
+                process_deferred_action(&mut app, action).await;
+            }
 
-                    // If another instance died and left a stale lock, reclaim it
-                    if TmuxController::is_nav_lock_stale(&workspace_root).await {
-                        tracing::info!("reclaiming stale nav binding lock");
-                    }
+            // Incremental tmux reconciliation — checks one agent per tick
+            // (round-robin) so we never block the event loop for multiple
+            // pane_exists() calls.
+            app.reconcile_tmux_state().await;
 
-                    if let Err(e) = TmuxController::setup_nav_bindings(
-                        &tmux_session,
-                        &app.config.global.dashboard_key,
-                        &app.config.global.overview_key,
-                        Some(&workspace_root),
-                    ).await {
-                        tracing::error!(error = %e, "failed to re-establish nav bindings");
-                    } else {
+            // Check nav-binding health from background task (non-blocking)
+            while let Ok(status) = nav_rx.try_recv() {
+                match status {
+                    NavBindingStatus::Restored => {
                         app.push_notification(
                             "Keybindings restored".into(),
                             NotifyLevel::Info,
                         );
                     }
+                    NavBindingStatus::Failed(e) => {
+                        tracing::error!(error = %e, "failed to re-establish nav bindings");
+                    }
                 }
             }
 
-            // Periodic overview capture refresh (live content in tiles)
+            // Periodic overview capture refresh — one tile per tick (round-robin).
+            // 250ms per tile keeps content visibly fresh without blocking.
             if app.view_mode == ViewMode::SessionOverview
-                && app.overview_last_capture.elapsed() >= Duration::from_millis(750)
+                && app.overview_last_capture.elapsed() >= Duration::from_millis(250)
             {
-                refresh_overview_captures(&mut app).await;
+                refresh_overview_capture_incremental(&mut app).await;
             }
 
             // Expire old notifications
@@ -269,10 +361,17 @@ pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
 /// always create a fresh "dashboard" window, launch the current binary, and attach.
 /// Any previously running vibe process in the dashboard is killed — session
 /// windows (Claude Code) are unaffected and continue running.
+///
+/// Uses a lock file to prevent two simultaneous launches from racing on
+/// window creation.
 async fn bootstrap_into_tmux(
     workspace_root: &std::path::Path,
     tmux_session: &str,
 ) -> anyhow::Result<()> {
+    // Acquire bootstrap lock to serialize concurrent launches
+    let lock_path = workspace_root.join(".vibe").join("bootstrap.lock");
+    let _lock_guard = acquire_bootstrap_lock(&lock_path).await?;
+
     TmuxController::ensure_session(tmux_session).await?;
 
     let dashboard_target = format!("{tmux_session}:dashboard");
@@ -294,6 +393,9 @@ async fn bootstrap_into_tmux(
     TmuxController::create_window(tmux_session, "dashboard", dir).await?;
     TmuxController::send_keys(&dashboard_target, &exe).await?;
 
+    // Release lock before attaching (attach blocks until detach)
+    drop(_lock_guard);
+
     // Attach or switch client depending on our tmux context
     if std::env::var("TMUX").is_ok() {
         TmuxController::switch_client(tmux_session).await?;
@@ -302,6 +404,71 @@ async fn bootstrap_into_tmux(
     }
 
     Ok(())
+}
+
+/// Simple file-based lock for serializing bootstrap attempts.
+/// Returns a guard that removes the lock file when dropped.
+async fn acquire_bootstrap_lock(
+    lock_path: &std::path::Path,
+) -> anyhow::Result<BootstrapLockGuard> {
+    use std::time::Duration;
+
+    // Try to acquire for up to 5 seconds
+    for _ in 0..50 {
+        // Check if an existing lock is stale (process dead)
+        if lock_path.exists() {
+            if let Ok(contents) = tokio::fs::read_to_string(lock_path).await {
+                if let Ok(pid) = contents.trim().parse::<i32>() {
+                    let alive = unsafe { libc::kill(pid, 0) == 0 };
+                    if !alive {
+                        // Stale lock — reclaim it
+                        let _ = tokio::fs::remove_file(lock_path).await;
+                    } else {
+                        // Another process is bootstrapping — wait
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Try to create the lock file exclusively
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(lock_path)
+            .await
+        {
+            Ok(_) => {
+                let pid = std::process::id().to_string();
+                let _ = tokio::fs::write(lock_path, pid.as_bytes()).await;
+                return Ok(BootstrapLockGuard {
+                    path: lock_path.to_path_buf(),
+                });
+            }
+            Err(_) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+
+    // Timeout — force acquire by removing stale lock
+    let _ = tokio::fs::remove_file(lock_path).await;
+    let pid = std::process::id().to_string();
+    let _ = tokio::fs::write(lock_path, pid.as_bytes()).await;
+    Ok(BootstrapLockGuard {
+        path: lock_path.to_path_buf(),
+    })
+}
+
+struct BootstrapLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for BootstrapLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// Create the permanent "main" session if it doesn't exist yet.
@@ -838,7 +1005,7 @@ async fn handle_normal_key(
         // Enter: primary action
         KeyCode::Enter => match app.focus {
             Focus::SessionList => {
-                do_open_session(app).await?;
+                app.deferred_actions.push_back(DeferredAction::OpenSession);
             }
             Focus::AgentList => {
                 if let Some(agent) = app.selected_agent() {
@@ -923,7 +1090,7 @@ async fn handle_normal_key(
         // when the overview user-key (\e[33~) is pressed.
         KeyCode::Char('§') => {
             if app.visible_session_count() > 0 {
-                enter_overview(app).await?;
+                app.deferred_actions.push_back(DeferredAction::EnterOverview);
             }
         }
 
@@ -1164,13 +1331,22 @@ async fn enter_overview(app: &mut App) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Re-capture pane content for all overview tiles (periodic live refresh).
-async fn refresh_overview_captures(app: &mut App) {
-    for tile in &mut app.overview_captures {
+/// Incrementally refresh ONE overview tile per call (round-robin).
+/// This distributes tmux capture_pane calls across ticks instead of
+/// blocking the event loop to refresh all tiles at once.
+async fn refresh_overview_capture_incremental(app: &mut App) {
+    let tile_count = app.overview_captures.len();
+    if tile_count == 0 {
+        return;
+    }
+
+    let idx = app.overview_next_refresh % tile_count;
+    if let Some(tile) = app.overview_captures.get_mut(idx) {
         if let Ok(content) = TmuxController::capture_pane(&tile.pane_id, 50).await {
             tile.content = content;
         }
     }
+    app.overview_next_refresh = idx + 1;
     app.overview_last_capture = Instant::now();
 }
 
@@ -1376,53 +1552,16 @@ async fn handle_input_key(app: &mut App, code: KeyCode) -> anyhow::Result<bool> 
                         .replace(' ', "-")
                         .to_lowercase();
                     app.input_mode = InputMode::Normal;
-                    match commands::new::execute(
-                        &app.workspace_root,
-                        input.clone(),
-                        None,
-                        None,
-                        None,
-                        None,
-                        false,
-                        None,
-                        &app.config,
-                    )
-                    .await
-                    {
-                        Ok(()) => {
-                            app.refresh_state().await;
-                            app.push_notification(
-                                format!("Session '{input}' created"),
-                                NotifyLevel::Success,
-                            );
-                        }
-                        Err(e) => {
-                            app.push_notification(format!("Error: {e}"), NotifyLevel::Error);
-                        }
-                    }
+                    app.deferred_actions
+                        .push_back(DeferredAction::CreateSession { name: input });
                 }
                 InputMode::SpawnAgent => {
                     app.input_mode = InputMode::Normal;
                     let session_name = app.selected_session().map(|s| s.name.clone());
-                    match commands::spawn::execute(
-                        &app.workspace_root,
-                        raw_input.clone(),
+                    app.deferred_actions.push_back(DeferredAction::SpawnCustom {
+                        prompt: raw_input.clone(),
                         session_name,
-                        None, // template
-                        None, // system_prompt
-                        false,
-                        &app.config,
-                    )
-                    .await
-                    {
-                        Ok(()) => {
-                            app.refresh_state().await;
-                            app.push_notification("Agent spawned".into(), NotifyLevel::Success);
-                        }
-                        Err(e) => {
-                            app.push_notification(format!("Error: {e}"), NotifyLevel::Error);
-                        }
-                    }
+                    });
                 }
                 _ => {}
             }
@@ -1460,7 +1599,7 @@ async fn handle_select_template_key(app: &mut App, code: KeyCode) -> anyhow::Res
                 if matches!(app.agent_entries[idx].source, AgentSource::Shell) {
                     app.input_mode = InputMode::Normal;
                     app.agent_entries.clear();
-                    do_open_shell(app).await?;
+                    app.deferred_actions.push_back(DeferredAction::OpenShell);
                 } else {
                     // Extract needed values before mutating app
                     let entry_name = app.agent_entries[idx].name.clone();
@@ -1478,28 +1617,13 @@ async fn handle_select_template_key(app: &mut App, code: KeyCode) -> anyhow::Res
                     app.input_mode = InputMode::Normal;
                     app.agent_entries.clear();
 
-                    match commands::spawn::execute(
-                        &app.workspace_root,
-                        entry_desc,
+                    app.deferred_actions.push_back(DeferredAction::SpawnFromTemplate {
+                        description: entry_desc,
                         session_name,
                         template_name,
                         system_prompt,
-                        false,
-                        &app.config,
-                    )
-                    .await
-                    {
-                        Ok(()) => {
-                            app.refresh_state().await;
-                            app.push_notification(
-                                format!("Agent '{entry_name}' spawned"),
-                                NotifyLevel::Success,
-                            );
-                        }
-                        Err(e) => {
-                            app.push_notification(format!("Error: {e}"), NotifyLevel::Error);
-                        }
-                    }
+                        entry_name,
+                    });
                 }
             } else {
                 // "Custom prompt..." — switch to free text input
@@ -1521,30 +1645,8 @@ async fn handle_confirm_kill_session(app: &mut App, code: KeyCode) -> anyhow::Re
             if let Some(session) = app.selected_session() {
                 let name = session.name.clone();
                 app.input_mode = InputMode::Normal;
-                match commands::kill::execute(
-                    &app.workspace_root,
-                    name.clone(),
-                    true,  // force
-                    false, // don't delete branch
-                    &app.config,
-                )
-                .await
-                {
-                    Ok(()) => {
-                        app.refresh_state().await;
-                        if app.selected_session >= app.visible_session_count().saturating_sub(1) {
-                            app.selected_session = app.visible_session_count().saturating_sub(1);
-                        }
-                        app.selected_agent = 0;
-                        app.push_notification(
-                            format!("Session '{name}' killed"),
-                            NotifyLevel::Success,
-                        );
-                    }
-                    Err(e) => {
-                        app.push_notification(format!("Error: {e}"), NotifyLevel::Error);
-                    }
-                }
+                app.deferred_actions
+                    .push_back(DeferredAction::KillSession { name });
             }
         }
         KeyCode::Esc => {
@@ -1562,46 +1664,14 @@ async fn handle_confirm_kill_agent(app: &mut App, code: KeyCode) -> anyhow::Resu
                 let agent_id = agent.id;
                 let agent_name = agent.name.clone();
                 let agent_mode = agent.mode.clone();
+                let session_name = app.selected_session().map(|s| s.name.clone());
                 app.input_mode = InputMode::Normal;
-
-                // Kill the agent's tmux resources
-                if agent_mode == AgentMode::Shell {
-                    // Shell agents have their own window — kill the whole window
-                    if let Some(session) = app.selected_session() {
-                        let tmux_session = app.state.tmux_session_name.clone();
-                        let window_target = format!(
-                            "{}:{}~{}",
-                            tmux_session, session.name, agent_name
-                        );
-                        if let Err(e) = TmuxController::kill_window(&window_target).await {
-                            tracing::warn!(window = %window_target, error = %e, "failed to kill shell window");
-                        }
-                    }
-                } else if let Some(ref pane) = app.selected_agent().and_then(|a| a.tmux_pane.clone()) {
-                    // Interactive agents use a pane inside the session window
-                    if let Err(e) = TmuxController::kill_pane(pane).await {
-                        tracing::warn!(pane = %pane, error = %e, "failed to kill agent pane");
-                    }
-                }
-
-                // Remove the agent from state entirely
-                app.state.agents.retain(|a| a.id != agent_id);
-                if let Err(e) = app.state_manager.save(&app.state).await {
-                    tracing::error!(error = %e, "failed to save state after killing agent");
-                }
-
-                // Adjust selection
-                let agent_count = app.selected_session_agents().len();
-                if agent_count > 0 && app.selected_agent >= agent_count {
-                    app.selected_agent = agent_count - 1;
-                } else if agent_count == 0 {
-                    app.selected_agent = 0;
-                }
-
-                app.push_notification(
-                    format!("Agent '{agent_name}' killed and removed"),
-                    NotifyLevel::Success,
-                );
+                app.deferred_actions.push_back(DeferredAction::KillAgent {
+                    agent_id,
+                    agent_name,
+                    agent_mode,
+                    session_name,
+                });
             }
         }
         KeyCode::Esc => {
@@ -1610,4 +1680,176 @@ async fn handle_confirm_kill_agent(app: &mut App, code: KeyCode) -> anyhow::Resu
         _ => {}
     }
     Ok(false)
+}
+
+// ─── Deferred action processing ──────────────────────────────────────────────
+
+/// Process a single deferred action. Called once per tick outside the event
+/// drain loop so heavy tmux operations don't block keyboard input.
+async fn process_deferred_action(app: &mut App, action: DeferredAction) {
+    match action {
+        DeferredAction::OpenSession => {
+            if let Err(e) = do_open_session(app).await {
+                app.push_notification(format!("Error: {e}"), NotifyLevel::Error);
+            }
+        }
+        DeferredAction::EnterOverview => {
+            if let Err(e) = enter_overview(app).await {
+                app.push_notification(format!("Error: {e}"), NotifyLevel::Error);
+            }
+        }
+        DeferredAction::OpenShell => {
+            if let Err(e) = do_open_shell(app).await {
+                app.push_notification(format!("Error: {e}"), NotifyLevel::Error);
+            }
+        }
+        DeferredAction::KillSession { name } => {
+            match commands::kill::execute(
+                &app.workspace_root,
+                name.clone(),
+                true,  // force
+                false, // don't delete branch
+                &app.config,
+            )
+            .await
+            {
+                Ok(()) => {
+                    app.refresh_state().await;
+                    if app.selected_session >= app.visible_session_count().saturating_sub(1) {
+                        app.selected_session = app.visible_session_count().saturating_sub(1);
+                    }
+                    app.selected_agent = 0;
+                    app.push_notification(
+                        format!("Session '{name}' killed"),
+                        NotifyLevel::Success,
+                    );
+                }
+                Err(e) => {
+                    app.push_notification(format!("Error: {e}"), NotifyLevel::Error);
+                }
+            }
+        }
+        DeferredAction::KillAgent {
+            agent_id,
+            agent_name,
+            agent_mode,
+            session_name,
+        } => {
+            // Kill the agent's tmux resources
+            if agent_mode == AgentMode::Shell {
+                if let Some(session_name) = &session_name {
+                    let tmux_session = app.state.tmux_session_name.clone();
+                    let window_target =
+                        format!("{}:{}~{}", tmux_session, session_name, agent_name);
+                    if let Err(e) = TmuxController::kill_window(&window_target).await {
+                        tracing::warn!(window = %window_target, error = %e, "failed to kill shell window");
+                    }
+                }
+            } else {
+                // Find agent's pane before removing
+                let pane = app
+                    .state
+                    .agents
+                    .iter()
+                    .find(|a| a.id == agent_id)
+                    .and_then(|a| a.tmux_pane.clone());
+                if let Some(ref pane_id) = pane {
+                    if let Err(e) = TmuxController::kill_pane(pane_id).await {
+                        tracing::warn!(pane = %pane_id, error = %e, "failed to kill agent pane");
+                    }
+                }
+            }
+
+            // Remove the agent from state
+            app.state.agents.retain(|a| a.id != agent_id);
+            if let Err(e) = app.state_manager.save(&app.state).await {
+                tracing::error!(error = %e, "failed to save state after killing agent");
+            }
+            app.clamp_selection_indices();
+            app.push_notification(
+                format!("Agent '{agent_name}' killed and removed"),
+                NotifyLevel::Success,
+            );
+        }
+        DeferredAction::SpawnFromTemplate {
+            description,
+            session_name,
+            template_name,
+            system_prompt,
+            entry_name,
+        } => {
+            match commands::spawn::execute(
+                &app.workspace_root,
+                description,
+                session_name,
+                template_name,
+                system_prompt,
+                false,
+                &app.config,
+            )
+            .await
+            {
+                Ok(()) => {
+                    app.refresh_state().await;
+                    app.push_notification(
+                        format!("Agent '{entry_name}' spawned"),
+                        NotifyLevel::Success,
+                    );
+                }
+                Err(e) => {
+                    app.push_notification(format!("Error: {e}"), NotifyLevel::Error);
+                }
+            }
+        }
+        DeferredAction::SpawnCustom {
+            prompt,
+            session_name,
+        } => {
+            match commands::spawn::execute(
+                &app.workspace_root,
+                prompt,
+                session_name,
+                None,
+                None,
+                false,
+                &app.config,
+            )
+            .await
+            {
+                Ok(()) => {
+                    app.refresh_state().await;
+                    app.push_notification("Agent spawned".into(), NotifyLevel::Success);
+                }
+                Err(e) => {
+                    app.push_notification(format!("Error: {e}"), NotifyLevel::Error);
+                }
+            }
+        }
+        DeferredAction::CreateSession { name } => {
+            match commands::new::execute(
+                &app.workspace_root,
+                name.clone(),
+                None,
+                None,
+                None,
+                None,
+                false,
+                None,
+                &app.config,
+            )
+            .await
+            {
+                Ok(()) => {
+                    app.refresh_state().await;
+                    app.push_notification(
+                        format!("Session '{name}' created"),
+                        NotifyLevel::Success,
+                    );
+                }
+                Err(e) => {
+                    app.push_notification(format!("Error: {e}"), NotifyLevel::Error);
+                }
+            }
+        }
+    }
 }

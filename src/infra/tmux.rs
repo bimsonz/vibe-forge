@@ -171,12 +171,19 @@ impl TmuxController {
         run_tmux(&["select-pane", "-t", pane_id, "-T", title]).await
     }
 
-    /// Attach to a tmux session (replaces current terminal)
+    /// Attach to a tmux session (replaces current terminal).
+    /// Uses spawn_blocking to avoid blocking the tokio runtime — the
+    /// attach-session command takes over the terminal until the user detaches.
     pub async fn attach(session_name: &str) -> Result<(), ForgeError> {
-        // This is special — it replaces our process
-        let status = std::process::Command::new("tmux")
-            .args(["attach-session", "-t", session_name])
-            .status()?;
+        let session = session_name.to_string();
+        let status = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("tmux")
+                .args(["attach-session", "-t", &session])
+                .status()
+        })
+        .await
+        .map_err(|e| ForgeError::Tmux(format!("attach task panicked: {e}")))?
+        .map_err(ForgeError::from)?;
 
         if !status.success() {
             return Err(ForgeError::Tmux("Failed to attach to session".into()));
@@ -202,12 +209,12 @@ impl TmuxController {
         run_tmux(&["set-option", "-w", "-t", target, "allow-rename", "off"]).await
     }
 
-    /// Set escape-time to 50ms so multi-byte CSI sequences (like \e[29~) arrive
-    /// intact even with terminal input buffering (e.g. Warp). 50ms is still
-    /// imperceptible for bare Escape but gives enough headroom to avoid sequence
-    /// splitting that causes bindings to act as Escape.
-    pub async fn set_escape_time() -> Result<(), ForgeError> {
-        run_tmux(&["set-option", "-s", "escape-time", "50"]).await
+    /// Set escape-time so multi-byte CSI sequences (like \e[29~) arrive
+    /// intact even with terminal input buffering (e.g. Warp) or SSH latency.
+    /// Default 100ms is imperceptible for bare Escape but gives enough headroom
+    /// to avoid sequence splitting that causes bindings to act as Escape.
+    pub async fn set_escape_time(ms: u32) -> Result<(), ForgeError> {
+        run_tmux(&["set-option", "-s", "escape-time", &ms.to_string()]).await
     }
 
     /// Enable extended key parsing so tmux correctly handles CSI u sequences
@@ -228,72 +235,49 @@ impl TmuxController {
     /// We register them as user-keys so tmux matches the raw byte sequences
     /// regardless of terminfo — this is the most reliable binding method.
     ///
-    /// All commands overwrite in-place (no cleanup-first) to avoid a vulnerability
-    /// window where bindings are temporarily absent.
+    /// All 6 commands are batched into a single `tmux source-file` call so
+    /// bindings transition atomically — there is never a moment where user-keys
+    /// are defined but bind-key entries are missing, or vice versa.
     pub async fn setup_nav_bindings(
-        forge_session: &str,
+        tmux_session: &str,
         dashboard_key: &str,
         overview_key: &str,
         workspace_root: Option<&Path>,
     ) -> Result<(), ForgeError> {
-        // Register raw escape sequences as user-keys.
-        // Pass the actual ESC byte (0x1b) so tmux stores the real sequence.
-        // tmux set-option overwrites existing values — no cleanup needed.
-        let dashboard_seq = format!("\x1b{dashboard_key}");
-        let overview_seq = format!("\x1b{overview_key}");
-        run_tmux(&["set-option", "-s", "user-keys[0]", &dashboard_seq]).await?;
-        run_tmux(&["set-option", "-s", "user-keys[1]", &overview_seq]).await?;
+        // Use \033 notation — tmux config file format for ESC byte.
+        let dashboard_seq = format!("\\033{dashboard_key}");
+        let overview_seq = format!("\\033{overview_key}");
 
         // Condition: window is NOT "dashboard" AND session IS the forge session
-        let mut condition =
-            String::from("#{&&:#{!=:#{window_name},dashboard},#{==:#{session_name},");
-        condition.push_str(forge_session);
-        condition.push_str("}}");
-
-        // Overview key (User1): switch to dashboard AND send § to the TUI.
-        // We use § as the internal trigger character — crossterm handles it
-        // reliably. The user-key binding on \e[33~ handles the tmux interception.
-        // bind-key overwrites existing bindings — no unbind needed.
-        run_tmux(&[
-            "bind-key",
-            "-n",
-            "User1",
-            "if-shell",
-            "-F",
-            &condition,
-            "select-window -t :dashboard ; send-keys §",
-            "send-keys §",
-        ])
-        .await?;
-
-        // Dashboard key (User0): from session windows, switch to dashboard.
-        // From the dashboard itself (e.g. overview mode), send Escape so the
-        // TUI handles it as "back".
-        run_tmux(&[
-            "bind-key",
-            "-n",
-            "User0",
-            "if-shell",
-            "-F",
-            &condition,
-            "select-window -t :dashboard",
-            "send-keys Escape",
-        ])
-        .await?;
-
-        // Fallback prefix bindings: Prefix+d (dashboard) and Prefix+o (overview).
-        // These work even when CSI user-key bindings are broken, giving the user
-        // a guaranteed escape route back to the dashboard.
-        let overview_action = format!(
-            "if-shell -F '{}' 'select-window -t :dashboard ; send-keys §' 'send-keys §'",
-            condition
+        let condition = format!(
+            "#{{&&:#{{!=:#{{window_name}},dashboard}},#{{==:#{{session_name}},{tmux_session}}}}}"
         );
-        let dashboard_action = format!(
-            "if-shell -F '{}' 'select-window -t :dashboard' 'send-keys Escape'",
-            condition
+
+        // Build all commands as a single tmux config file.
+        // tmux source-file processes these atomically in one server round-trip.
+        let config = format!(
+            r#"set-option -s user-keys[0] "{dashboard_seq}"
+set-option -s user-keys[1] "{overview_seq}"
+bind-key -n User0 if-shell -F '{condition}' 'select-window -t :dashboard' 'send-keys Escape'
+bind-key -n User1 if-shell -F '{condition}' 'select-window -t :dashboard ; send-keys §' 'send-keys §'
+bind-key d if-shell -F '{condition}' 'select-window -t :dashboard' 'send-keys Escape'
+bind-key o if-shell -F '{condition}' 'select-window -t :dashboard ; send-keys §' 'send-keys §'
+"#,
         );
-        run_tmux(&["bind-key", "d", &dashboard_action]).await?;
-        run_tmux(&["bind-key", "o", &overview_action]).await?;
+
+        let tmp_path = std::env::temp_dir().join(format!("vibe-nav-{}.conf", std::process::id()));
+        tokio::fs::write(&tmp_path, config.as_bytes()).await?;
+
+        let result = run_tmux(&[
+            "source-file",
+            tmp_path.to_str().unwrap_or("/tmp/vibe-nav.conf"),
+        ])
+        .await;
+
+        // Best-effort cleanup of temp file
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+
+        result?;
 
         // Write PID lock so cleanup knows which instance owns the bindings
         if let Some(root) = workspace_root {
@@ -324,6 +308,7 @@ impl TmuxController {
     /// Remove the user-key navigation bindings and unset the user-keys options.
     /// Only cleans up if the PID lock belongs to this process (or no lock exists).
     /// This prevents one instance's exit from destroying another's bindings.
+    /// All 6 cleanup commands are batched via `tmux source-file` for atomicity.
     pub async fn cleanup_nav_bindings(workspace_root: Option<&Path>) -> Result<(), ForgeError> {
         // Check PID lock — only clean up if we own the bindings
         if let Some(root) = workspace_root {
@@ -341,13 +326,26 @@ impl TmuxController {
             let _ = tokio::fs::remove_file(&lock_path).await;
         }
 
-        let _ = run_tmux(&["unbind-key", "-n", "User0"]).await;
-        let _ = run_tmux(&["unbind-key", "-n", "User1"]).await;
-        let _ = run_tmux(&["set-option", "-su", "user-keys[0]"]).await;
-        let _ = run_tmux(&["set-option", "-su", "user-keys[1]"]).await;
-        // Clean up prefix fallback bindings
-        let _ = run_tmux(&["unbind-key", "d"]).await;
-        let _ = run_tmux(&["unbind-key", "o"]).await;
+        let config = r#"unbind-key -n User0
+unbind-key -n User1
+set-option -su user-keys[0]
+set-option -su user-keys[1]
+unbind-key d
+unbind-key o
+"#;
+
+        let tmp_path = std::env::temp_dir().join(format!(
+            "vibe-nav-cleanup-{}.conf",
+            std::process::id()
+        ));
+        let _ = tokio::fs::write(&tmp_path, config.as_bytes()).await;
+        let _ = run_tmux(&[
+            "source-file",
+            tmp_path.to_str().unwrap_or("/tmp/vibe-nav-cleanup.conf"),
+        ])
+        .await;
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+
         Ok(())
     }
 
@@ -355,33 +353,36 @@ impl TmuxController {
     /// Checks that user-key values match expected sequences AND that bind-key
     /// entries for User0/User1 actually exist. Returns true only if everything
     /// is correctly configured.
+    ///
+    /// Uses 2 tmux commands (down from 4) by fetching all server options in
+    /// one call and parsing both user-keys values from the output.
     pub async fn verify_nav_bindings(
         dashboard_key: &str,
         overview_key: &str,
     ) -> bool {
-        // 1. Check user-key VALUES match expected sequences
-        let expected_dash = format!("\x1b{dashboard_key}");
-        let expected_over = format!("\x1b{overview_key}");
+        // 1. Single show-options call — check both user-keys values
+        let opts = match run_tmux_output(&["show-options", "-s"]).await {
+            Ok(output) => output,
+            Err(_) => return false,
+        };
 
-        let uk0_ok = match run_tmux_output(&["show-options", "-sv", "user-keys[0]"]).await {
-            Ok(val) => val.trim() == expected_dash.trim(),
-            Err(_) => false,
-        };
-        let uk1_ok = match run_tmux_output(&["show-options", "-sv", "user-keys[1]"]).await {
-            Ok(val) => val.trim() == expected_over.trim(),
-            Err(_) => false,
-        };
+        // Match against the CSI suffix (e.g. "[29~") in the output line.
+        // tmux may display the raw ESC byte differently across versions,
+        // so matching the suffix is more robust than exact byte comparison.
+        let uk0_ok = opts
+            .lines()
+            .any(|l| l.starts_with("user-keys[0]") && l.contains(dashboard_key));
+        let uk1_ok = opts
+            .lines()
+            .any(|l| l.starts_with("user-keys[1]") && l.contains(overview_key));
 
         if !uk0_ok || !uk1_ok {
             return false;
         }
 
-        // 2. Check bind-key entries exist for User0 and User1
+        // 2. Single list-keys call — check bind-key entries
         let bindings = run_tmux_output(&["list-keys"]).await.unwrap_or_default();
-        let has_user0 = bindings.contains("User0");
-        let has_user1 = bindings.contains("User1");
-
-        has_user0 && has_user1
+        bindings.contains("User0") && bindings.contains("User1")
     }
 
     /// Write PID lock file so cleanup knows which process owns the bindings.
@@ -457,27 +458,104 @@ impl TmuxController {
 
 }
 
-async fn run_tmux(args: &[&str]) -> Result<(), ForgeError> {
-    let output = Command::new("tmux").args(args).output().await?;
+/// Check if an IO error is transient and worth retrying.
+fn is_transient_io_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::Interrupted
+    )
+}
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // Ignore "no server running" errors for has-session checks
-        if !stderr.contains("no server running") && !stderr.contains("session not found") {
-            warn!(args = ?args, stderr = %stderr, "tmux command failed");
-            return Err(ForgeError::Tmux(stderr.to_string()));
+/// Check if a tmux stderr message indicates a transient failure.
+fn is_transient_tmux_error(stderr: &str) -> bool {
+    stderr.contains("server exited")
+        || stderr.contains("lost server")
+        || stderr.contains("no server running")
+}
+
+async fn run_tmux(args: &[&str]) -> Result<(), ForgeError> {
+    let mut last_err = None;
+
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(50 * 2u64.pow(attempt))).await;
+        }
+
+        match Command::new("tmux").args(args).output().await {
+            Ok(output) => {
+                if output.status.success() {
+                    return Ok(());
+                }
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // Ignore benign errors
+                if stderr.contains("no server running") || stderr.contains("session not found") {
+                    return Ok(());
+                }
+                // Retry on transient tmux errors
+                if attempt < 2 && is_transient_tmux_error(&stderr) {
+                    debug!(args = ?args, attempt, "tmux transient failure, retrying");
+                    last_err = Some(stderr.to_string());
+                    continue;
+                }
+                warn!(args = ?args, stderr = %stderr, "tmux command failed");
+                return Err(ForgeError::Tmux(stderr.to_string()));
+            }
+            Err(e) => {
+                if attempt < 2 && is_transient_io_error(&e) {
+                    debug!(args = ?args, attempt, error = %e, "tmux IO error, retrying");
+                    last_err = Some(e.to_string());
+                    continue;
+                }
+                return Err(ForgeError::from(e));
+            }
         }
     }
-    Ok(())
+
+    Err(ForgeError::Tmux(format!(
+        "tmux command failed after 3 attempts: {}",
+        last_err.unwrap_or_default()
+    )))
 }
 
 async fn run_tmux_output(args: &[&str]) -> Result<String, ForgeError> {
-    let output = Command::new("tmux").args(args).output().await?;
+    let mut last_err = None;
 
-    if !output.status.success() {
-        return Err(ForgeError::Tmux(
-            String::from_utf8_lossy(&output.stderr).to_string(),
-        ));
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(50 * 2u64.pow(attempt))).await;
+        }
+
+        match Command::new("tmux").args(args).output().await {
+            Ok(output) => {
+                if output.status.success() {
+                    return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+                }
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // Retry on transient tmux errors
+                if attempt < 2 && is_transient_tmux_error(&stderr) {
+                    debug!(args = ?args, attempt, "tmux transient failure, retrying");
+                    last_err = Some(stderr.to_string());
+                    continue;
+                }
+                return Err(ForgeError::Tmux(stderr.to_string()));
+            }
+            Err(e) => {
+                if attempt < 2 && is_transient_io_error(&e) {
+                    debug!(args = ?args, attempt, error = %e, "tmux IO error, retrying");
+                    last_err = Some(e.to_string());
+                    continue;
+                }
+                return Err(ForgeError::from(e));
+            }
+        }
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+
+    Err(ForgeError::Tmux(format!(
+        "tmux command failed after 3 attempts: {}",
+        last_err.unwrap_or_default()
+    )))
 }

@@ -17,10 +17,12 @@ pub struct ForgeWatcher {
 }
 
 impl ForgeWatcher {
-    /// Watch .forge/agents/ for output.json files being created.
+    /// Watch .vibe/agents/ for output.json files being created.
+    /// Uses a bounded channel sender to prevent unbounded memory growth
+    /// if events arrive faster than the TUI can drain them.
     pub fn start(
         agents_dir: PathBuf,
-        tx: mpsc::UnboundedSender<WatcherEvent>,
+        tx: mpsc::Sender<WatcherEvent>,
     ) -> Result<Self, notify::Error> {
         // Ensure directory exists
         let _ = std::fs::create_dir_all(&agents_dir);
@@ -48,7 +50,8 @@ impl ForgeWatcher {
                                                 info!(%agent_id, "agent output detected");
                                                 let result =
                                                     crate::infra::claude::to_agent_result(&output);
-                                                let _ = tx.send(WatcherEvent::AgentCompleted {
+                                                // try_send: drop event if buffer full rather than OOM
+                                                let _ = tx.try_send(WatcherEvent::AgentCompleted {
                                                     agent_id,
                                                     result,
                                                 });
@@ -57,7 +60,7 @@ impl ForgeWatcher {
                                             }
                                         }
                                     } else {
-                                        let _ = tx.send(WatcherEvent::AgentOutputWritten {
+                                        let _ = tx.try_send(WatcherEvent::AgentOutputWritten {
                                             path: path.clone(),
                                         });
                                     }

@@ -142,7 +142,7 @@ pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
 
     match state.workspace.kind {
         WorkspaceKind::SingleRepo => {
-            let worktrees = crate::infra::git::list_forge_worktrees(workspace_root).await?;
+            let worktrees = crate::infra::git::list_vibe_worktrees(workspace_root).await?;
             for wt in &worktrees {
                 if !known_paths.contains(&wt.path) {
                     println!(
@@ -157,7 +157,7 @@ pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
         }
         WorkspaceKind::MultiRepo => {
             for repo in &state.workspace.repos {
-                let worktrees = crate::infra::git::list_forge_worktrees(&repo.root).await?;
+                let worktrees = crate::infra::git::list_vibe_worktrees(&repo.root).await?;
                 for wt in &worktrees {
                     if !known_paths.contains(&wt.path) {
                         println!(

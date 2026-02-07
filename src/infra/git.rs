@@ -149,8 +149,8 @@ pub async fn remove_worktree(
     Ok(())
 }
 
-/// List all worktrees managed by forge (identified by naming convention)
-pub async fn list_forge_worktrees(repo_root: &Path) -> Result<Vec<WorktreeInfo>, ForgeError> {
+/// List all worktrees managed by vibe (identified by naming convention)
+pub async fn list_vibe_worktrees(repo_root: &Path) -> Result<Vec<WorktreeInfo>, ForgeError> {
     let output = Command::new("git")
         .current_dir(repo_root)
         .args(["worktree", "list", "--porcelain"])
