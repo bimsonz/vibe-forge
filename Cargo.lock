@@ -3042,6 +3042,7 @@ dependencies = [
  "crossterm 0.28.1",
  "dirs",
  "git2",
+ "libc",
  "notify",
  "notify-rust",
  "predicates",

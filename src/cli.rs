@@ -120,6 +120,9 @@ pub enum Commands {
     /// Check workspace health and reconcile state
     Doctor,
 
+    /// Re-scan parent directory for new/removed repos (multi-repo only)
+    RefreshRepos,
+
     /// Clean up stale worktrees and archived sessions
     Cleanup {
         /// Remove all archived sessions

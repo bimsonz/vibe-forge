@@ -15,6 +15,10 @@ pub async fn execute(workspace_root: &Path, json: bool) -> Result<(), ForgeError
 
     println!("Vibe: {}", state.workspace.name);
     println!("  Root: {}", state.workspace.root.display());
+    if state.workspace.is_multi_repo() {
+        let repo_names: Vec<&str> = state.workspace.repos.iter().map(|r| r.name.as_str()).collect();
+        println!("  Repos ({}): {}", repo_names.len(), repo_names.join(", "));
+    }
     println!(
         "  tmux session: {}",
         state.tmux_session_name

@@ -20,7 +20,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             .border_type(BorderType::Plain)
             .border_style(Style::default().fg(scolor));
 
-        let lines = vec![
+        let mut lines = vec![
             Line::from(vec![
                 Span::styled("Branch: ", Style::default().fg(Color::Gray)),
                 Span::styled(&session.branch, Style::default().fg(scolor)),
@@ -51,22 +51,40 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                     Style::default(),
                 ),
             ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Template: ", Style::default().fg(Color::Gray)),
-                Span::styled(
-                    session.template.as_deref().unwrap_or("none"),
-                    Style::default(),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("Agents: ", Style::default().fg(Color::Gray)),
-                Span::styled(
-                    format!("{}", app.selected_session_agents().len()),
-                    Style::default(),
-                ),
-            ]),
         ];
+
+        // Show per-repo worktree paths for multi-repo sessions
+        if !session.repo_worktrees.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("Repos: ", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    format!("{}", session.repo_worktrees.len()),
+                    Style::default(),
+                ),
+            ]));
+            for (repo_name, _) in &session.repo_worktrees {
+                lines.push(Line::from(vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled(repo_name, Style::default().fg(scolor)),
+                ]));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("Template: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                session.template.as_deref().unwrap_or("none"),
+                Style::default(),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Agents: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("{}", app.selected_session_agents().len()),
+                Style::default(),
+            ),
+        ]));
 
         let paragraph = Paragraph::new(lines).block(block);
         f.render_widget(paragraph, area);

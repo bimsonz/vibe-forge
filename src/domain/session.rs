@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -23,6 +24,9 @@ pub struct Session {
     /// True for the permanent workspace-root session. Cannot be killed.
     #[serde(default)]
     pub is_main: bool,
+    /// Multi-repo: worktree path per repo name. Empty for single-repo sessions.
+    #[serde(default)]
+    pub repo_worktrees: BTreeMap<String, PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -74,6 +78,7 @@ impl Session {
             agents: vec![],
             metadata: SessionMetadata::default(),
             is_main: false,
+            repo_worktrees: BTreeMap::new(),
         }
     }
 

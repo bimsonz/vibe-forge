@@ -1,4 +1,5 @@
 use crate::domain::session::SessionStatus;
+use crate::domain::workspace::WorkspaceKind;
 use crate::error::ForgeError;
 use crate::infra::{claude, gh, state::StateManager, tmux::TmuxController};
 use std::path::Path;
@@ -33,7 +34,34 @@ pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
         issues += 1;
     }
 
-    // 2. Check forge state
+    // 2. Check nav binding health
+    print!("  nav bindings: ");
+    {
+        let cfg = crate::config::load_config(Some(workspace_root))?;
+        if TmuxController::verify_nav_bindings(
+            &cfg.global.dashboard_key,
+            &cfg.global.overview_key,
+        ).await {
+            println!("ok");
+        } else {
+            println!("BROKEN — will be auto-repaired when dashboard starts");
+            issues += 1;
+        }
+
+        // Check for stale PID lock
+        let lock_path = workspace_root.join(".vibe").join("nav_bindings.lock");
+        if lock_path.exists() {
+            if TmuxController::is_nav_lock_stale(workspace_root).await {
+                println!("  nav lock: STALE (orphaned from crashed process) — removing");
+                let _ = tokio::fs::remove_file(&lock_path).await;
+                fixed += 1;
+            } else {
+                println!("  nav lock: ok (owned by running process)");
+            }
+        }
+    }
+
+    // 3. Check forge state
     let state_manager = StateManager::new(workspace_root);
     if !state_manager.is_initialized() {
         println!("\n  State: NOT INITIALIZED - run `vibe init`");
@@ -99,22 +127,66 @@ pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
 
     // 5. Check for orphaned worktrees (forge-managed worktrees not in state)
     println!("\n  Checking for orphaned worktrees...");
-    let worktrees = crate::infra::git::list_forge_worktrees(workspace_root).await?;
-    let known_paths: Vec<_> = state
+
+    // Collect all known worktree paths (single-repo paths + multi-repo per-repo paths)
+    let mut known_paths: Vec<_> = state
         .sessions
         .iter()
         .map(|s| s.worktree_path.clone())
         .collect();
+    for session in &state.sessions {
+        for wt_path in session.repo_worktrees.values() {
+            known_paths.push(wt_path.clone());
+        }
+    }
 
-    for wt in &worktrees {
-        if !known_paths.contains(&wt.path) {
-            println!(
-                "    ORPHAN: {} (branch: {})",
-                wt.path.display(),
-                wt.branch
-            );
-            println!("      Remove with: git worktree remove --force {}", wt.path.display());
-            issues += 1;
+    match state.workspace.kind {
+        WorkspaceKind::SingleRepo => {
+            let worktrees = crate::infra::git::list_forge_worktrees(workspace_root).await?;
+            for wt in &worktrees {
+                if !known_paths.contains(&wt.path) {
+                    println!(
+                        "    ORPHAN: {} (branch: {})",
+                        wt.path.display(),
+                        wt.branch
+                    );
+                    println!("      Remove with: git worktree remove --force {}", wt.path.display());
+                    issues += 1;
+                }
+            }
+        }
+        WorkspaceKind::MultiRepo => {
+            for repo in &state.workspace.repos {
+                let worktrees = crate::infra::git::list_forge_worktrees(&repo.root).await?;
+                for wt in &worktrees {
+                    if !known_paths.contains(&wt.path) {
+                        println!(
+                            "    ORPHAN in {}: {} (branch: {})",
+                            repo.name,
+                            wt.path.display(),
+                            wt.branch
+                        );
+                        println!("      Remove with: git worktree remove --force {}", wt.path.display());
+                        issues += 1;
+                    }
+                }
+            }
+
+            // Validate repo_worktrees paths exist for active sessions
+            for session in &state.sessions {
+                if !session.is_active() {
+                    continue;
+                }
+                for (repo_name, wt_path) in &session.repo_worktrees {
+                    if !wt_path.exists() {
+                        println!(
+                            "    MISSING: {} worktree for session {} at {}",
+                            repo_name, session.name, wt_path.display()
+                        );
+                        issues += 1;
+                    }
+                }
+            }
         }
     }
 

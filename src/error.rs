@@ -47,6 +47,9 @@ pub enum ForgeError {
     #[error("Not a git repository")]
     NotGitRepo,
 
+    #[error("No git repositories found in directory")]
+    NoReposFound,
+
     #[error("Vibe not initialized. Run `vibe init` first.")]
     NotInitialized,
 

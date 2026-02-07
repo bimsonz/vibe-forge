@@ -30,6 +30,7 @@ pub async fn execute(
     }
 
     let worktree_path = session.worktree_path.clone();
+    let repo_worktrees = session.repo_worktrees.clone();
     let session_name = session.name.clone();
     let tmux_window = format!("{}:{}", state.tmux_session_name, session_name);
 
@@ -39,11 +40,43 @@ pub async fn execute(
     let _ = TmuxController::kill_window(&tmux_window).await;
     info!(session = %session_name, "tmux window removed");
 
-    // Remove git worktree
-    if worktree_path.exists() {
-        match git::remove_worktree(workspace_root, &worktree_path, delete_branch).await {
-            Ok(()) => info!(path = %worktree_path.display(), "worktree removed"),
-            Err(e) => warn!(error = %e, "failed to remove worktree"),
+    if repo_worktrees.is_empty() {
+        // Single-repo mode: remove the single worktree
+        if worktree_path.exists() {
+            match git::remove_worktree(workspace_root, &worktree_path, delete_branch).await {
+                Ok(()) => info!(path = %worktree_path.display(), "worktree removed"),
+                Err(e) => warn!(error = %e, "failed to remove worktree"),
+            }
+        }
+    } else {
+        // Multi-repo mode: remove worktree from each repo
+        for (repo_name, wt_path) in &repo_worktrees {
+            // Find the original repo root from workspace.repos
+            let repo_root = state
+                .workspace
+                .repos
+                .iter()
+                .find(|r| r.name == *repo_name)
+                .map(|r| r.root.clone());
+
+            if let Some(repo_root) = repo_root {
+                if wt_path.exists() {
+                    match git::remove_worktree(&repo_root, wt_path, delete_branch).await {
+                        Ok(()) => info!(repo = %repo_name, path = %wt_path.display(), "repo worktree removed"),
+                        Err(e) => warn!(repo = %repo_name, error = %e, "failed to remove repo worktree"),
+                    }
+                }
+            } else {
+                warn!(repo = %repo_name, "repo not found in workspace, skipping worktree removal");
+            }
+        }
+
+        // Remove the session root directory
+        if worktree_path.exists() {
+            match tokio::fs::remove_dir_all(&worktree_path).await {
+                Ok(()) => info!(path = %worktree_path.display(), "session root removed"),
+                Err(e) => warn!(error = %e, "failed to remove session root directory"),
+            }
         }
     }
 

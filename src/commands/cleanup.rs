@@ -43,11 +43,37 @@ pub async fn execute(
         println!("  {} [{}]", session.name, session.status);
 
         if !dry_run {
-            // Remove worktree if it still exists
-            if session.worktree_path.exists() {
-                match git::remove_worktree(workspace_root, &session.worktree_path, false).await {
-                    Ok(()) => println!("    Worktree removed"),
-                    Err(e) => println!("    Warning: {e}"),
+            if session.repo_worktrees.is_empty() {
+                // Single-repo: remove the single worktree
+                if session.worktree_path.exists() {
+                    match git::remove_worktree(workspace_root, &session.worktree_path, false).await {
+                        Ok(()) => println!("    Worktree removed"),
+                        Err(e) => println!("    Warning: {e}"),
+                    }
+                }
+            } else {
+                // Multi-repo: remove each repo's worktree
+                for (repo_name, wt_path) in &session.repo_worktrees {
+                    if wt_path.exists() {
+                        // Find the repo root
+                        let repo_root = state
+                            .workspace
+                            .repos
+                            .iter()
+                            .find(|r| r.name == *repo_name)
+                            .map(|r| r.root.clone());
+                        if let Some(repo_root) = repo_root {
+                            match git::remove_worktree(&repo_root, wt_path, false).await {
+                                Ok(()) => println!("    Worktree removed: {repo_name}"),
+                                Err(e) => println!("    Warning ({repo_name}): {e}"),
+                            }
+                        }
+                    }
+                }
+                // Remove session root directory
+                if session.worktree_path.exists() {
+                    let _ = tokio::fs::remove_dir_all(&session.worktree_path).await;
+                    println!("    Session root removed");
                 }
             }
         }
@@ -63,7 +89,13 @@ pub async fn execute(
         state_manager.save(&state).await?;
 
         // Prune git worktree references
-        git::prune(workspace_root).await?;
+        if state.workspace.repos.is_empty() {
+            git::prune(workspace_root).await?;
+        } else {
+            for repo in &state.workspace.repos {
+                git::prune(&repo.root).await?;
+            }
+        }
 
         println!("Cleanup complete.");
     } else {

@@ -13,6 +13,59 @@ pub struct GlobalConfig {
     pub clipboard_on_complete: bool,
     pub notify_on_complete: bool,
     pub max_concurrent_agents: Option<usize>,
+    /// CSI sequence suffix for "back to dashboard" binding (default: "[29~")
+    /// The full escape sequence sent by the terminal is \e + this suffix.
+    pub dashboard_key: String,
+    /// CSI sequence suffix for "overview" binding (default: "[33~")
+    pub overview_key: String,
+}
+
+impl GlobalConfig {
+    /// Human-readable label for the dashboard key (for status bar hints).
+    pub fn dashboard_key_display(&self) -> String {
+        csi_display_name(&self.dashboard_key)
+    }
+
+    /// Human-readable label for the overview key (for status bar hints).
+    pub fn overview_key_display(&self) -> String {
+        csi_display_name(&self.overview_key)
+    }
+
+    /// Check if a crossterm KeyCode matches the configured overview key.
+    pub fn matches_overview_key(&self, code: &crossterm::event::KeyCode) -> bool {
+        csi_to_keycode(&self.overview_key)
+            .is_some_and(|expected| std::mem::discriminant(&expected) == std::mem::discriminant(code) && expected == *code)
+    }
+}
+
+/// Map a CSI suffix like "[29~" to the crossterm KeyCode it produces.
+fn csi_to_keycode(suffix: &str) -> Option<crossterm::event::KeyCode> {
+    use crossterm::event::KeyCode;
+    // CSI sequences of the form \e[N~ map to function keys
+    let inner = suffix.strip_prefix('[')?.strip_suffix('~')?;
+    let n: u8 = inner.parse().ok()?;
+    // Standard xterm mapping: 11-15→F1-F5, 17-21→F6-F10, 23-24→F11-F12,
+    // 25-26→F13-F14, 28-29→F15-F16, 31-34→F17-F20
+    let fkey = match n {
+        11..=15 => n - 10,        // F1-F5
+        17..=21 => n - 11,        // F6-F10
+        23..=24 => n - 12,        // F11-F12
+        25..=26 => n - 12,        // F13-F14
+        28..=29 => n - 13,        // F15-F16
+        31..=34 => n - 14,        // F17-F20
+        _ => return None,
+    };
+    Some(KeyCode::F(fkey))
+}
+
+/// Human-readable name for a CSI suffix.
+fn csi_display_name(suffix: &str) -> String {
+    if let Some(kc) = csi_to_keycode(suffix) {
+        if let crossterm::event::KeyCode::F(n) = kc {
+            return format!("F{n}");
+        }
+    }
+    suffix.to_string()
 }
 
 impl Default for GlobalConfig {
@@ -25,6 +78,8 @@ impl Default for GlobalConfig {
             clipboard_on_complete: true,
             notify_on_complete: true,
             max_concurrent_agents: None,
+            dashboard_key: "[29~".into(),
+            overview_key: "[33~".into(),
         }
     }
 }

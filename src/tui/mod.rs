@@ -57,13 +57,37 @@ pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
 
     let mut app = App::new(workspace_root.clone(), state, cfg, state_manager);
 
-    // Name this window "dashboard" and bind Escape to switch back here
-    // from any session window.
-    let _ = TmuxController::rename_window("dashboard").await;
-    let _ = TmuxController::disable_auto_rename_for(&format!("{}:dashboard", tmux_session)).await;
-    let _ = TmuxController::setup_nav_bindings(&tmux_session).await;
-    let _ = TmuxController::hide_status_bar(&tmux_session).await;
-    let _ = TmuxController::enable_mouse(&tmux_session).await;
+    // Name this window "dashboard" and bind nav keys to switch back here.
+    if let Err(e) = TmuxController::rename_window("dashboard").await {
+        tracing::warn!(error = %e, "failed to rename dashboard window");
+    }
+    if let Err(e) = TmuxController::disable_auto_rename_for(&format!("{}:dashboard", tmux_session)).await {
+        tracing::warn!(error = %e, "failed to disable auto-rename");
+    }
+    if let Err(e) = TmuxController::set_escape_time().await {
+        tracing::error!(error = %e, "failed to set escape-time");
+    }
+    if let Err(e) = TmuxController::enable_extended_keys().await {
+        tracing::warn!(error = %e, "failed to enable extended keys");
+    }
+    if let Err(e) = TmuxController::setup_nav_bindings(
+        &tmux_session,
+        &app.config.global.dashboard_key,
+        &app.config.global.overview_key,
+        Some(&workspace_root),
+    ).await {
+        tracing::error!(error = %e, "nav binding setup failed");
+        app.push_notification(
+            "Hotkey setup failed — restart vibe to retry".into(),
+            NotifyLevel::Error,
+        );
+    }
+    if let Err(e) = TmuxController::hide_status_bar(&tmux_session).await {
+        tracing::warn!(error = %e, "failed to hide status bar");
+    }
+    if let Err(e) = TmuxController::configure_scrollback(&tmux_session).await {
+        tracing::warn!(error = %e, "failed to configure scrollback");
+    }
 
     // Ensure the permanent "main" session exists (workspace root, no worktree)
     ensure_main_session(&mut app).await;
@@ -79,11 +103,44 @@ pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
     let agents_dir = workspace_root.join(".vibe").join("agents");
     let _watcher = ForgeWatcher::start(agents_dir, watcher_tx).ok();
 
+    // Signal handler: best-effort cleanup on SIGTERM/SIGHUP so bindings don't
+    // persist after an unclean shutdown. SIGKILL can't be caught — stale PID
+    // locks are detected by verify_nav_bindings and re-claimed automatically.
+    let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let shutdown = shutdown.clone();
+        let tmux_session = tmux_session.clone();
+        let signal_workspace_root = workspace_root.clone();
+        tokio::spawn(async move {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm = signal(SignalKind::terminate())
+                .expect("failed to register SIGTERM handler");
+            let mut sighup = signal(SignalKind::hangup())
+                .expect("failed to register SIGHUP handler");
+
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    tracing::info!("SIGTERM received, cleaning up bindings");
+                }
+                _ = sighup.recv() => {
+                    tracing::info!("SIGHUP received, cleaning up bindings");
+                }
+            }
+
+            let _ = TmuxController::cleanup_nav_bindings(Some(&signal_workspace_root)).await;
+            let _ = TmuxController::show_status_bar(&tmux_session).await;
+            shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+
     let tick_rate = Duration::from_millis(250);
     let refresh_interval = Duration::from_secs(3);
     let mut last_tick = Instant::now();
 
     loop {
+        if shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
         // Draw
         terminal.draw(|f| draw(f, &app))?;
 
@@ -144,6 +201,34 @@ pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
             if app.last_refresh.elapsed() >= refresh_interval {
                 app.refresh_state().await;
                 app.reconcile_tmux_state().await;
+
+                // Deep-validate nav bindings (checks values + bind-key entries).
+                // Recovers from tmux conf reloads, other instances exiting, etc.
+                if !TmuxController::verify_nav_bindings(
+                    &app.config.global.dashboard_key,
+                    &app.config.global.overview_key,
+                ).await {
+                    tracing::warn!("nav bindings lost or corrupted, re-establishing");
+
+                    // If another instance died and left a stale lock, reclaim it
+                    if TmuxController::is_nav_lock_stale(&workspace_root).await {
+                        tracing::info!("reclaiming stale nav binding lock");
+                    }
+
+                    if let Err(e) = TmuxController::setup_nav_bindings(
+                        &tmux_session,
+                        &app.config.global.dashboard_key,
+                        &app.config.global.overview_key,
+                        Some(&workspace_root),
+                    ).await {
+                        tracing::error!(error = %e, "failed to re-establish nav bindings");
+                    } else {
+                        app.push_notification(
+                            "Keybindings restored".into(),
+                            NotifyLevel::Info,
+                        );
+                    }
+                }
             }
 
             // Periodic overview capture refresh (live content in tiles)
@@ -164,9 +249,9 @@ pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
         }
     }
 
-    // Clean up tmux bindings and status bar
+    // Clean up tmux bindings and status bar (only if we own the PID lock)
     let _ = TmuxController::show_status_bar(&tmux_session).await;
-    let _ = TmuxController::cleanup_nav_bindings().await;
+    let _ = TmuxController::cleanup_nav_bindings(Some(&workspace_root)).await;
 
     // Restore terminal
     disable_raw_mode()?;
@@ -834,7 +919,8 @@ async fn handle_normal_key(
             app.push_notification("State refreshed".into(), NotifyLevel::Info);
         }
 
-        // Session overview (§ key) — TUI-rendered tiled preview
+        // Session overview — § is the internal trigger character, sent by tmux
+        // when the overview user-key (\e[33~) is pressed.
         KeyCode::Char('§') => {
             if app.visible_session_count() > 0 {
                 enter_overview(app).await?;

@@ -15,10 +15,28 @@ use tracing::info;
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Resolve workspace root
+    // Resolve workspace root.
+    // 1. Explicit --workspace flag
+    // 2. cwd is inside a git repo → use the repo root
+    // 3. cwd has .vibe/ → multi-repo workspace already initialized here
+    // 4. cwd contains git sub-directories → potential multi-repo workspace
     let workspace_root = cli.workspace.or_else(|| {
         let cwd = std::env::current_dir().ok()?;
-        infra::git::find_repo_root(&cwd).ok()
+        // Try git repo first (single-repo mode)
+        if let Ok(root) = infra::git::find_repo_root(&cwd) {
+            return Some(root);
+        }
+        // Already initialized multi-repo workspace
+        if cwd.join(".vibe").exists() {
+            return Some(cwd);
+        }
+        // Not yet initialized — check if there are git repos here (for `vibe init`)
+        if let Ok(repos) = infra::git::discover_repos(&cwd) {
+            if !repos.is_empty() {
+                return Some(cwd);
+            }
+        }
+        None
     });
 
     // Initialize tracing (log to .vibe/vibe.log if workspace exists)
@@ -161,6 +179,11 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Cleanup { all, dry_run }) => {
             let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
             commands::cleanup::execute(&root, all, dry_run).await?;
+        }
+
+        Some(Commands::RefreshRepos) => {
+            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            commands::refresh_repos::execute(&root).await?;
         }
 
     }
