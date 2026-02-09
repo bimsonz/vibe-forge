@@ -1,13 +1,8 @@
-```
-██╗   ██╗██╗██████╗ ███████╗    ████████╗██████╗ ███████╗███████╗
-██║   ██║██║██╔══██╗██╔════╝    ╚══██╔══╝██╔══██╗██╔════╝██╔════╝
-██║   ██║██║██████╔╝█████╗         ██║   ██████╔╝█████╗  █████╗
-╚██╗ ██╔╝██║██╔══██╗██╔══╝         ██║   ██╔══██╗██╔══╝  ██╔══╝
- ╚████╔╝ ██║██████╔╝███████╗       ██║   ██║  ██║███████╗███████╗
-  ╚═══╝  ╚═╝╚═════╝ ╚══════╝       ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝
-```
+<p align="center">
+  <img src="assets/banner.svg" alt="Vibe Tree" width="700" />
+</p>
 
-**Multi-agent Claude Code orchestrator with TUI dashboard.**
+<p align="center"><strong>Multi-agent Claude Code orchestrator with TUI dashboard.</strong></p>
 
 Vibe manages parallel Claude Code sessions inside tmux. Each session gets its own git worktree and tmux window so multiple Claude instances can work on the same repo simultaneously without conflicts. A terminal dashboard provides real-time monitoring, agent spawning, and session switching.
 
