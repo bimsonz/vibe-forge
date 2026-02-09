@@ -2,7 +2,7 @@ use crate::config::MergedConfig;
 use crate::domain::session::{Session, SessionStatus};
 use crate::domain::template::AgentTemplate;
 use crate::domain::workspace::WorkspaceKind;
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use crate::infra::{claude, git, state::StateManager, tmux::TmuxController};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -18,13 +18,13 @@ pub async fn execute(
     headless: bool,
     prompt: Option<String>,
     config: &MergedConfig,
-) -> Result<(), ForgeError> {
+) -> Result<(), VibeError> {
     let state_manager = StateManager::new(workspace_root);
     let mut state = state_manager.load().await?;
 
     // Check for duplicate session name
     if state.find_session_by_name(&name).is_some() {
-        return Err(ForgeError::User(format!(
+        return Err(VibeError::User(format!(
             "Session '{name}' already exists. Use a different name."
         )));
     }
@@ -98,13 +98,14 @@ pub async fn execute(
 
     if headless {
         let task_prompt = prompt.ok_or_else(|| {
-            ForgeError::User("--prompt is required in headless mode".into())
+            VibeError::User("--prompt is required in headless mode".into())
         })?;
 
         // Run headless claude
         let tmux_target = format!("{}:{}", state.tmux_session_name, name);
         let cmd = format!(
-            "claude -p --output-format json {} '{}'",
+            "{} -p --output-format json {} '{}'",
+            config.claude_command(),
             resolved_system_prompt
                 .as_ref()
                 .map(|sp| format!("--system-prompt '{}'", sp.replace('\'', "'\\''")))
@@ -118,6 +119,7 @@ pub async fn execute(
         // Start interactive claude
         let tmux_target = format!("{}:{}", state.tmux_session_name, name);
         let cmd = claude::interactive_command(
+            config.claude_command(),
             resolved_system_prompt.as_deref(),
             &[],
             &[],
@@ -148,7 +150,7 @@ async fn create_multi_repo_worktrees(
     base_ref: Option<&str>,
     worktree_base_dir: &Path,
     parent_name: &str,
-) -> Result<(PathBuf, BTreeMap<String, PathBuf>), ForgeError> {
+) -> Result<(PathBuf, BTreeMap<String, PathBuf>), VibeError> {
     let short_id = &uuid::Uuid::new_v4().to_string()[..8];
     let session_dir_name = format!("{parent_name}-vibe-{short_id}");
     let session_root = worktree_base_dir.join(&session_dir_name);
@@ -202,7 +204,7 @@ async fn create_multi_repo_worktrees(
     if successes == 0 {
         // Clean up the empty session root
         let _ = tokio::fs::remove_dir_all(&session_root).await;
-        return Err(ForgeError::Git(format!(
+        return Err(VibeError::Git(format!(
             "Failed to create worktrees in any repo: {}",
             errors.join("; ")
         )));

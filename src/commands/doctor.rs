@@ -1,10 +1,10 @@
 use crate::domain::session::SessionStatus;
 use crate::domain::workspace::WorkspaceKind;
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use crate::infra::{claude, gh, state::StateManager, tmux::TmuxController};
 use std::path::Path;
 
-pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
+pub async fn execute(workspace_root: &Path) -> Result<(), VibeError> {
     println!("vibe doctor: checking workspace health\n");
     let mut issues = 0;
     let mut fixed = 0;
@@ -18,11 +18,13 @@ pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
         issues += 1;
     }
 
+    let cfg = crate::config::load_config(Some(workspace_root))?;
+
     print!("  claude: ");
-    if claude::is_available() {
-        println!("ok");
+    if claude::is_available(cfg.claude_command()) {
+        println!("ok ({})", cfg.claude_command());
     } else {
-        println!("NOT FOUND - install from: https://claude.ai/code");
+        println!("NOT FOUND ({}) - install from: https://claude.ai/code", cfg.claude_command());
         issues += 1;
     }
 
@@ -37,7 +39,6 @@ pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
     // 2. Check nav binding health
     print!("  nav bindings: ");
     {
-        let cfg = crate::config::load_config(Some(workspace_root))?;
         if TmuxController::verify_nav_bindings(
             &cfg.global.dashboard_key,
             &cfg.global.overview_key,
@@ -61,7 +62,7 @@ pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
         }
     }
 
-    // 3. Check forge state
+    // 3. Check vibe state
     let state_manager = StateManager::new(workspace_root);
     if !state_manager.is_initialized() {
         println!("\n  State: NOT INITIALIZED - run `vibe init`");
@@ -125,7 +126,7 @@ pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
         }
     }
 
-    // 5. Check for orphaned worktrees (forge-managed worktrees not in state)
+    // 5. Check for orphaned worktrees (vibe-managed worktrees not in state)
     println!("\n  Checking for orphaned worktrees...");
 
     // Collect all known worktree paths (single-repo paths + multi-repo per-repo paths)

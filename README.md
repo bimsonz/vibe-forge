@@ -1,10 +1,10 @@
 ```
-██╗   ██╗██╗██████╗ ███████╗    ███████╗ ██████╗ ██████╗  ██████╗ ███████╗
-██║   ██║██║██╔══██╗██╔════╝    ██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝
-██║   ██║██║██████╔╝█████╗      █████╗  ██║   ██║██████╔╝██║  ███╗█████╗
-╚██╗ ██╔╝██║██╔══██╗██╔══╝      ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝
- ╚████╔╝ ██║██████╔╝███████╗    ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗
-  ╚═══╝  ╚═╝╚═════╝ ╚══════╝    ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝
+██╗   ██╗██╗██████╗ ███████╗    ████████╗██████╗ ███████╗███████╗
+██║   ██║██║██╔══██╗██╔════╝    ╚══██╔══╝██╔══██╗██╔════╝██╔════╝
+██║   ██║██║██████╔╝█████╗         ██║   ██████╔╝█████╗  █████╗
+╚██╗ ██╔╝██║██╔══██╗██╔══╝         ██║   ██╔══██╗██╔══╝  ██╔══╝
+ ╚████╔╝ ██║██████╔╝███████╗       ██║   ██║  ██║███████╗███████╗
+  ╚═══╝  ╚═╝╚═════╝ ╚══════╝       ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝
 ```
 
 **Multi-agent Claude Code orchestrator with TUI dashboard.**
@@ -93,6 +93,7 @@ vibe spawn "review the PR" --template reviewer
 ```toml
 tmux_session_prefix = "vibe-"       # tmux session name prefix
 worktree_suffix = "-vibe-"          # worktree directory suffix
+claude_command = "claude"            # claude binary (supports env prefixes, custom paths)
 claude_extra_args = []              # extra args passed to claude CLI
 template_dirs = []                  # additional template search paths
 clipboard_on_complete = true        # copy agent output on completion
@@ -105,6 +106,7 @@ overview_key = "[33~"               # CSI suffix for overview hotkey (F19)
 ### Workspace: `.vibe/config.toml`
 
 ```toml
+claude_command = "ENV=val claude"    # override claude command for this project
 worktree_base_dir = "/path/to/base" # where worktrees are created
 default_branch = "main"             # base branch for new sessions
 template_dir = "./templates"        # project-specific templates

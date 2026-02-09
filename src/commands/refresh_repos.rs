@@ -1,9 +1,9 @@
 use crate::domain::workspace::WorkspaceKind;
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use crate::infra::{git, state::StateManager};
 use std::path::Path;
 
-pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
+pub async fn execute(workspace_root: &Path) -> Result<(), VibeError> {
     let state_manager = StateManager::new(workspace_root);
     let mut state = state_manager.load().await?;
 

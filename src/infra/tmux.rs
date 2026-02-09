@@ -1,4 +1,4 @@
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use std::path::Path;
 use tokio::process::Command;
 use tracing::{debug, warn};
@@ -22,7 +22,7 @@ impl TmuxController {
     }
 
     /// Check if a tmux session exists
-    pub async fn session_exists(session_name: &str) -> Result<bool, ForgeError> {
+    pub async fn session_exists(session_name: &str) -> Result<bool, VibeError> {
         let output = Command::new("tmux")
             .args(["has-session", "-t", session_name])
             .output()
@@ -30,8 +30,8 @@ impl TmuxController {
         Ok(output.status.success())
     }
 
-    /// Create the forge tmux session if it doesn't exist
-    pub async fn ensure_session(session_name: &str) -> Result<(), ForgeError> {
+    /// Create the vibe tmux session if it doesn't exist
+    pub async fn ensure_session(session_name: &str) -> Result<(), VibeError> {
         if Self::session_exists(session_name).await? {
             debug!(session = session_name, "tmux session already exists");
             return Ok(());
@@ -40,12 +40,12 @@ impl TmuxController {
         run_tmux(&["new-session", "-d", "-s", session_name, "-x", "200", "-y", "50"]).await
     }
 
-    /// Create a new window within the forge session
+    /// Create a new window within the vibe session
     pub async fn create_window(
         session_name: &str,
         window_name: &str,
         working_dir: &str,
-    ) -> Result<String, ForgeError> {
+    ) -> Result<String, VibeError> {
         run_tmux_output(&[
             "new-window",
             "-t",
@@ -66,7 +66,7 @@ impl TmuxController {
         target_window: &str,
         working_dir: &str,
         horizontal: bool,
-    ) -> Result<String, ForgeError> {
+    ) -> Result<String, VibeError> {
         let split_flag = if horizontal { "-h" } else { "-v" };
         run_tmux_output(&[
             "split-window",
@@ -83,38 +83,38 @@ impl TmuxController {
     }
 
     /// Send a command string to a tmux pane
-    pub async fn send_keys(pane_id: &str, command: &str) -> Result<(), ForgeError> {
+    pub async fn send_keys(pane_id: &str, command: &str) -> Result<(), VibeError> {
         run_tmux(&["send-keys", "-t", pane_id, command, "Enter"]).await
     }
 
     /// Capture the current contents of a pane
-    pub async fn capture_pane(pane_id: &str, lines: u32) -> Result<String, ForgeError> {
+    pub async fn capture_pane(pane_id: &str, lines: u32) -> Result<String, VibeError> {
         let start = format!("-{lines}");
         run_tmux_output(&["capture-pane", "-t", pane_id, "-p", "-S", &start]).await
     }
 
     /// Kill a tmux window
-    pub async fn kill_window(target: &str) -> Result<(), ForgeError> {
+    pub async fn kill_window(target: &str) -> Result<(), VibeError> {
         run_tmux(&["kill-window", "-t", target]).await
     }
 
     /// Select a specific pane within a window
-    pub async fn select_pane(pane_id: &str) -> Result<(), ForgeError> {
+    pub async fn select_pane(pane_id: &str) -> Result<(), VibeError> {
         run_tmux(&["select-pane", "-t", pane_id]).await
     }
 
     /// Kill a tmux pane
-    pub async fn kill_pane(pane_id: &str) -> Result<(), ForgeError> {
+    pub async fn kill_pane(pane_id: &str) -> Result<(), VibeError> {
         run_tmux(&["kill-pane", "-t", pane_id]).await
     }
 
     /// Get the name of the currently active window
-    pub async fn current_window_name() -> Result<String, ForgeError> {
+    pub async fn current_window_name() -> Result<String, VibeError> {
         run_tmux_output(&["display-message", "-p", "#{window_name}"]).await
     }
 
     /// Get the first pane ID for a window
-    pub async fn first_pane_id(target_window: &str) -> Result<String, ForgeError> {
+    pub async fn first_pane_id(target_window: &str) -> Result<String, VibeError> {
         run_tmux_output(&[
             "list-panes",
             "-t",
@@ -129,12 +129,12 @@ impl TmuxController {
     }
 
     /// Kill an entire tmux session
-    pub async fn kill_session(session_name: &str) -> Result<(), ForgeError> {
+    pub async fn kill_session(session_name: &str) -> Result<(), VibeError> {
         run_tmux(&["kill-session", "-t", session_name]).await
     }
 
     /// List all panes in a session
-    pub async fn list_panes(session_name: &str) -> Result<Vec<PaneInfo>, ForgeError> {
+    pub async fn list_panes(session_name: &str) -> Result<Vec<PaneInfo>, VibeError> {
         let output = run_tmux_output(&[
             "list-panes",
             "-s",
@@ -167,14 +167,14 @@ impl TmuxController {
     }
 
     /// Set a pane title
-    pub async fn set_pane_title(pane_id: &str, title: &str) -> Result<(), ForgeError> {
+    pub async fn set_pane_title(pane_id: &str, title: &str) -> Result<(), VibeError> {
         run_tmux(&["select-pane", "-t", pane_id, "-T", title]).await
     }
 
     /// Attach to a tmux session (replaces current terminal).
     /// Uses spawn_blocking to avoid blocking the tokio runtime — the
     /// attach-session command takes over the terminal until the user detaches.
-    pub async fn attach(session_name: &str) -> Result<(), ForgeError> {
+    pub async fn attach(session_name: &str) -> Result<(), VibeError> {
         let session = session_name.to_string();
         let status = tokio::task::spawn_blocking(move || {
             std::process::Command::new("tmux")
@@ -182,29 +182,29 @@ impl TmuxController {
                 .status()
         })
         .await
-        .map_err(|e| ForgeError::Tmux(format!("attach task panicked: {e}")))?
-        .map_err(ForgeError::from)?;
+        .map_err(|e| VibeError::Tmux(format!("attach task panicked: {e}")))?
+        .map_err(VibeError::from)?;
 
         if !status.success() {
-            return Err(ForgeError::Tmux("Failed to attach to session".into()));
+            return Err(VibeError::Tmux("Failed to attach to session".into()));
         }
         Ok(())
     }
 
     /// Select a specific window within the session
-    pub async fn select_window(target: &str) -> Result<(), ForgeError> {
+    pub async fn select_window(target: &str) -> Result<(), VibeError> {
         run_tmux(&["select-window", "-t", target]).await
     }
 
     /// Rename the current tmux window
-    pub async fn rename_window(name: &str) -> Result<(), ForgeError> {
+    pub async fn rename_window(name: &str) -> Result<(), VibeError> {
         run_tmux(&["rename-window", name]).await
     }
 
     /// Disable automatic window renaming for a specific window.
     /// Prevents tmux from renaming windows when the running command changes
     /// (e.g., "my-session" → "node" when Claude starts).
-    pub async fn disable_auto_rename_for(target: &str) -> Result<(), ForgeError> {
+    pub async fn disable_auto_rename_for(target: &str) -> Result<(), VibeError> {
         run_tmux(&["set-option", "-w", "-t", target, "automatic-rename", "off"]).await?;
         run_tmux(&["set-option", "-w", "-t", target, "allow-rename", "off"]).await
     }
@@ -213,14 +213,14 @@ impl TmuxController {
     /// intact even with terminal input buffering (e.g. Warp) or SSH latency.
     /// Default 100ms is imperceptible for bare Escape but gives enough headroom
     /// to avoid sequence splitting that causes bindings to act as Escape.
-    pub async fn set_escape_time(ms: u32) -> Result<(), ForgeError> {
+    pub async fn set_escape_time(ms: u32) -> Result<(), VibeError> {
         run_tmux(&["set-option", "-s", "escape-time", &ms.to_string()]).await
     }
 
     /// Enable extended key parsing so tmux correctly handles CSI u sequences
     /// (e.g. Shift+Enter) from modern terminals like Warp instead of
     /// misinterpreting them as copy-mode triggers.
-    pub async fn enable_extended_keys() -> Result<(), ForgeError> {
+    pub async fn enable_extended_keys() -> Result<(), VibeError> {
         // Append extkeys to terminal-features so tmux parses CSI u input
         run_tmux(&[
             "set-option", "-as", "terminal-features", ",xterm*:extkeys",
@@ -243,12 +243,12 @@ impl TmuxController {
         dashboard_key: &str,
         overview_key: &str,
         workspace_root: Option<&Path>,
-    ) -> Result<(), ForgeError> {
+    ) -> Result<(), VibeError> {
         // Use \033 notation — tmux config file format for ESC byte.
         let dashboard_seq = format!("\\033{dashboard_key}");
         let overview_seq = format!("\\033{overview_key}");
 
-        // Condition: window is NOT "dashboard" AND session IS the forge session
+        // Condition: window is NOT "dashboard" AND session IS the vibe session
         let condition = format!(
             "#{{&&:#{{!=:#{{window_name}},dashboard}},#{{==:#{{session_name}},{tmux_session}}}}}"
         );
@@ -290,18 +290,18 @@ bind-key o if-shell -F '{condition}' 'select-window -t :dashboard ; send-keys §
     /// Enable mouse scrolling and set scrollback buffer for a session.
     /// Hold Shift while clicking/dragging to use native terminal selection
     /// (bypasses tmux mouse capture for copy/paste).
-    pub async fn configure_scrollback(session_name: &str) -> Result<(), ForgeError> {
+    pub async fn configure_scrollback(session_name: &str) -> Result<(), VibeError> {
         run_tmux(&["set-option", "-t", session_name, "mouse", "on"]).await?;
         run_tmux(&["set-option", "-t", session_name, "history-limit", "10000"]).await
     }
 
     /// Hide the tmux status bar for a session
-    pub async fn hide_status_bar(session_name: &str) -> Result<(), ForgeError> {
+    pub async fn hide_status_bar(session_name: &str) -> Result<(), VibeError> {
         run_tmux(&["set-option", "-t", session_name, "status", "off"]).await
     }
 
     /// Show the tmux status bar for a session
-    pub async fn show_status_bar(session_name: &str) -> Result<(), ForgeError> {
+    pub async fn show_status_bar(session_name: &str) -> Result<(), VibeError> {
         run_tmux(&["set-option", "-t", session_name, "status", "on"]).await
     }
 
@@ -309,7 +309,7 @@ bind-key o if-shell -F '{condition}' 'select-window -t :dashboard ; send-keys §
     /// Only cleans up if the PID lock belongs to this process (or no lock exists).
     /// This prevents one instance's exit from destroying another's bindings.
     /// All 6 cleanup commands are batched via `tmux source-file` for atomicity.
-    pub async fn cleanup_nav_bindings(workspace_root: Option<&Path>) -> Result<(), ForgeError> {
+    pub async fn cleanup_nav_bindings(workspace_root: Option<&Path>) -> Result<(), VibeError> {
         // Check PID lock — only clean up if we own the bindings
         if let Some(root) = workspace_root {
             let lock_path = root.join(".vibe").join("nav_bindings.lock");
@@ -412,28 +412,28 @@ unbind-key o
     }
 
     /// Get the name of the tmux session we're currently inside
-    pub async fn current_session_name() -> Result<String, ForgeError> {
+    pub async fn current_session_name() -> Result<String, VibeError> {
         run_tmux_output(&["display-message", "-p", "#{session_name}"]).await
     }
 
     /// Switch the current tmux client to a different session
-    pub async fn switch_client(session_name: &str) -> Result<(), ForgeError> {
+    pub async fn switch_client(session_name: &str) -> Result<(), VibeError> {
         run_tmux(&["switch-client", "-t", session_name]).await
     }
 
     /// Detach the current client from the tmux session without killing the session
-    pub async fn detach_client() -> Result<(), ForgeError> {
+    pub async fn detach_client() -> Result<(), VibeError> {
         run_tmux(&["detach-client"]).await
     }
 
     /// Get the current command running in a pane (first pane of target window)
-    pub async fn pane_current_command(target: &str) -> Result<String, ForgeError> {
+    pub async fn pane_current_command(target: &str) -> Result<String, VibeError> {
         run_tmux_output(&["display-message", "-t", target, "-p", "#{pane_current_command}"])
             .await
     }
 
     /// Get the current pane ID
-    pub async fn current_pane_id() -> Result<String, ForgeError> {
+    pub async fn current_pane_id() -> Result<String, VibeError> {
         run_tmux_output(&["display-message", "-p", "#{pane_id}"]).await
     }
 
@@ -452,8 +452,29 @@ unbind-key o
     }
 
     /// Get the window ID containing a pane
-    pub async fn window_id_for_pane(pane_id: &str) -> Result<String, ForgeError> {
+    pub async fn window_id_for_pane(pane_id: &str) -> Result<String, VibeError> {
         run_tmux_output(&["display-message", "-t", pane_id, "-p", "#{window_id}"]).await
+    }
+
+    /// Get the first pane's ID and current command in a single tmux call.
+    /// Returns (pane_id, current_command) or error if window doesn't exist.
+    pub async fn first_pane_info(target_window: &str) -> Result<(String, String), VibeError> {
+        let output = run_tmux_output(&[
+            "list-panes",
+            "-t",
+            target_window,
+            "-F",
+            "#{pane_id}\t#{pane_current_command}",
+        ])
+        .await?;
+
+        if let Some(first_line) = output.lines().next() {
+            let parts: Vec<&str> = first_line.splitn(2, '\t').collect();
+            if parts.len() == 2 {
+                return Ok((parts[0].to_string(), parts[1].to_string()));
+            }
+        }
+        Err(VibeError::Tmux("no pane found".into()))
     }
 
 }
@@ -477,7 +498,7 @@ fn is_transient_tmux_error(stderr: &str) -> bool {
         || stderr.contains("no server running")
 }
 
-async fn run_tmux(args: &[&str]) -> Result<(), ForgeError> {
+async fn run_tmux(args: &[&str]) -> Result<(), VibeError> {
     let mut last_err = None;
 
     for attempt in 0..3u32 {
@@ -502,7 +523,7 @@ async fn run_tmux(args: &[&str]) -> Result<(), ForgeError> {
                     continue;
                 }
                 warn!(args = ?args, stderr = %stderr, "tmux command failed");
-                return Err(ForgeError::Tmux(stderr.to_string()));
+                return Err(VibeError::Tmux(stderr.to_string()));
             }
             Err(e) => {
                 if attempt < 2 && is_transient_io_error(&e) {
@@ -510,18 +531,18 @@ async fn run_tmux(args: &[&str]) -> Result<(), ForgeError> {
                     last_err = Some(e.to_string());
                     continue;
                 }
-                return Err(ForgeError::from(e));
+                return Err(VibeError::from(e));
             }
         }
     }
 
-    Err(ForgeError::Tmux(format!(
+    Err(VibeError::Tmux(format!(
         "tmux command failed after 3 attempts: {}",
         last_err.unwrap_or_default()
     )))
 }
 
-async fn run_tmux_output(args: &[&str]) -> Result<String, ForgeError> {
+async fn run_tmux_output(args: &[&str]) -> Result<String, VibeError> {
     let mut last_err = None;
 
     for attempt in 0..3u32 {
@@ -541,7 +562,7 @@ async fn run_tmux_output(args: &[&str]) -> Result<String, ForgeError> {
                     last_err = Some(stderr.to_string());
                     continue;
                 }
-                return Err(ForgeError::Tmux(stderr.to_string()));
+                return Err(VibeError::Tmux(stderr.to_string()));
             }
             Err(e) => {
                 if attempt < 2 && is_transient_io_error(&e) {
@@ -549,12 +570,12 @@ async fn run_tmux_output(args: &[&str]) -> Result<String, ForgeError> {
                     last_err = Some(e.to_string());
                     continue;
                 }
-                return Err(ForgeError::from(e));
+                return Err(VibeError::from(e));
             }
         }
     }
 
-    Err(ForgeError::Tmux(format!(
+    Err(VibeError::Tmux(format!(
         "tmux command failed after 3 attempts: {}",
         last_err.unwrap_or_default()
     )))

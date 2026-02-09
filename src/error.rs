@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum ForgeError {
+pub enum VibeError {
     #[error("Git error: {0}")]
     Git(String),
 

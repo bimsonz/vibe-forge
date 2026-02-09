@@ -1,7 +1,7 @@
 use crate::config::MergedConfig;
 use crate::domain::agent::{Agent, AgentMode, AgentStatus};
 use crate::domain::template::AgentTemplate;
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use crate::infra::{claude, state::StateManager, tmux::TmuxController};
 use std::path::Path;
 use tracing::{error, info};
@@ -14,7 +14,7 @@ pub async fn execute(
     system_prompt_override: Option<String>,
     interactive: bool,
     config: &MergedConfig,
-) -> Result<(), ForgeError> {
+) -> Result<(), VibeError> {
     let state_manager = StateManager::new(workspace_root);
     let mut state = state_manager.load().await?;
 
@@ -22,14 +22,14 @@ pub async fn execute(
     let parent = if let Some(ref name) = session_name {
         state
             .find_session_by_name(name)
-            .ok_or_else(|| ForgeError::SessionNotFound(name.clone()))?
+            .ok_or_else(|| VibeError::SessionNotFound(name.clone()))?
     } else {
         // Default to the most recently created active session
         state
             .active_sessions()
             .into_iter()
             .max_by_key(|s| s.created_at)
-            .ok_or_else(|| ForgeError::User("No active sessions found".into()))?
+            .ok_or_else(|| VibeError::User("No active sessions found".into()))?
     };
 
     let parent_id = parent.id;
@@ -99,6 +99,7 @@ pub async fn execute(
                 .map(|t| t.disallowed_tools.clone())
                 .unwrap_or_default();
             let permission_mode = template.as_ref().and_then(|t| t.permission_mode.clone());
+            let claude_cmd = config.claude_command().to_string();
             let extra_args = config.global.claude_extra_args.clone();
             let wt = worktree_path.clone();
 
@@ -115,6 +116,7 @@ pub async fn execute(
             // Spawn headless in background
             tokio::spawn(async move {
                 let result = claude::run_headless(
+                    &claude_cmd,
                     &prompt,
                     &wt,
                     system_prompt.as_deref(),
@@ -154,6 +156,7 @@ pub async fn execute(
             agent.status = AgentStatus::Running;
 
             let cmd = claude::interactive_command(
+                config.claude_command(),
                 agent.system_prompt.as_deref(),
                 &template
                     .as_ref()
@@ -180,7 +183,7 @@ pub async fn execute(
         }
         AgentMode::Shell => {
             // Shells are created directly by the TUI, not via spawn command.
-            return Err(ForgeError::Tmux("Shell agents cannot be spawned via CLI".into()));
+            return Err(VibeError::Tmux("Shell agents cannot be spawned via CLI".into()));
         }
     }
 

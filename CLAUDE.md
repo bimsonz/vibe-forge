@@ -14,7 +14,7 @@ cargo install --path .   # install to ~/.cargo/bin
 - `src/cli.rs` - CLI command definitions (clap derive)
 - `src/config.rs` - Global (~/.config/vibe/) and workspace (.vibe/) configuration
 - `src/main.rs` - Entry point, workspace root resolution, command dispatch
-- `src/error.rs` - Error types (ForgeError via thiserror)
+- `src/error.rs` - Error types (VibeError via thiserror)
 - `src/commands/` - Command implementations (init, new, spawn, kill, status, doctor, etc.)
 - `src/domain/` - Core entities: Session, Agent, Workspace, Template, Plan
 - `src/infra/` - Infrastructure: TmuxController, git ops, Claude CLI, StateManager, file watcher
@@ -31,4 +31,4 @@ cargo install --path .   # install to ~/.cargo/bin
 
 ## Naming
 
-The CLI binary is `vibe`. The project directory may still be called `forge` (historical name). Internal references to "forge" in variable names (e.g., `forge_session`) are equivalent to "vibe".
+The CLI binary is `vibe`. The project directory may still be called `forge` (historical name). Internal code references use "vibe" (e.g., `VibeError`, `VibeWatcher`). The TUI banner reads "VIBE TREE".

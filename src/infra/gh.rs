@@ -1,4 +1,4 @@
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use serde::Deserialize;
 use std::path::Path;
 use tokio::process::Command;
@@ -32,7 +32,7 @@ pub struct PrFile {
 }
 
 /// Fetch PR metadata via gh CLI
-pub async fn get_pr_info(pr_number: u64, repo_root: &Path) -> Result<PrInfo, ForgeError> {
+pub async fn get_pr_info(pr_number: u64, repo_root: &Path) -> Result<PrInfo, VibeError> {
     let output = Command::new("gh")
         .current_dir(repo_root)
         .args([
@@ -46,20 +46,20 @@ pub async fn get_pr_info(pr_number: u64, repo_root: &Path) -> Result<PrInfo, For
         .await?;
 
     if !output.status.success() {
-        return Err(ForgeError::Git(format!(
+        return Err(VibeError::Git(format!(
             "gh pr view failed: {}",
             String::from_utf8_lossy(&output.stderr)
         )));
     }
 
     let info: PrInfo = serde_json::from_slice(&output.stdout)
-        .map_err(|e| ForgeError::Git(format!("Failed to parse PR info: {e}")))?;
+        .map_err(|e| VibeError::Git(format!("Failed to parse PR info: {e}")))?;
 
     Ok(info)
 }
 
 /// Get the diff for a PR
-pub async fn get_pr_diff(pr_number: u64, repo_root: &Path) -> Result<String, ForgeError> {
+pub async fn get_pr_diff(pr_number: u64, repo_root: &Path) -> Result<String, VibeError> {
     let output = Command::new("gh")
         .current_dir(repo_root)
         .args(["pr", "diff", &pr_number.to_string()])
@@ -67,7 +67,7 @@ pub async fn get_pr_diff(pr_number: u64, repo_root: &Path) -> Result<String, For
         .await?;
 
     if !output.status.success() {
-        return Err(ForgeError::Git(format!(
+        return Err(VibeError::Git(format!(
             "gh pr diff failed: {}",
             String::from_utf8_lossy(&output.stderr)
         )));
@@ -77,7 +77,7 @@ pub async fn get_pr_diff(pr_number: u64, repo_root: &Path) -> Result<String, For
 }
 
 /// Get comments on a PR
-pub async fn get_pr_comments(pr_number: u64, repo_root: &Path) -> Result<String, ForgeError> {
+pub async fn get_pr_comments(pr_number: u64, repo_root: &Path) -> Result<String, VibeError> {
     // Get review comments (inline code comments)
     let output = Command::new("gh")
         .current_dir(repo_root)
@@ -100,7 +100,7 @@ pub async fn get_pr_comments(pr_number: u64, repo_root: &Path) -> Result<String,
 }
 
 /// Parse a PR identifier — could be a number or a URL
-pub fn parse_pr_identifier(pr: &str) -> Result<u64, ForgeError> {
+pub fn parse_pr_identifier(pr: &str) -> Result<u64, VibeError> {
     // Try direct number
     if let Ok(n) = pr.parse::<u64>() {
         return Ok(n);
@@ -113,7 +113,7 @@ pub fn parse_pr_identifier(pr: &str) -> Result<u64, ForgeError> {
         }
     }
 
-    Err(ForgeError::User(format!(
+    Err(VibeError::User(format!(
         "Cannot parse PR identifier: '{pr}'. Use a PR number or URL."
     )))
 }

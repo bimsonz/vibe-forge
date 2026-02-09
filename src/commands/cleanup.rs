@@ -1,5 +1,5 @@
 use crate::domain::session::SessionStatus;
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use crate::infra::{git, state::StateManager};
 use std::path::Path;
 
@@ -7,7 +7,7 @@ pub async fn execute(
     workspace_root: &Path,
     all: bool,
     dry_run: bool,
-) -> Result<(), ForgeError> {
+) -> Result<(), VibeError> {
     let state_manager = StateManager::new(workspace_root);
     let mut state = state_manager.load().await?;
 

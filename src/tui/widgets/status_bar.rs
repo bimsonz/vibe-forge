@@ -4,6 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use std::time::SystemTime;
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let running = app.state.running_agents().len();
@@ -16,6 +17,21 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     }
     if running > 0 {
         right_indicators.push_str(&format!("  {running} agent(s) running"));
+    }
+    let attn = app.attention_count();
+    if attn > 0 {
+        let flash_on = (SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            / 500)
+            % 2
+            == 0;
+        if flash_on {
+            right_indicators.push_str(&format!("  ! {attn} need attention"));
+        } else {
+            right_indicators.push_str(&format!("    {attn} need attention"));
+        }
     }
 
     // Show latest notification if recent (< 5 seconds)

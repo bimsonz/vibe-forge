@@ -1,10 +1,10 @@
 use crate::config::{self, load_config};
 use crate::domain::workspace::{Workspace, WorkspaceKind, WorkspaceState};
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use crate::infra::{git, state::StateManager};
 use std::path::Path;
 
-pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
+pub async fn execute(workspace_root: &Path) -> Result<(), VibeError> {
     let state_manager = StateManager::new(workspace_root);
 
     if state_manager.is_initialized() {
@@ -28,7 +28,7 @@ pub async fn execute(workspace_root: &Path) -> Result<(), ForgeError> {
 async fn init_single_repo(
     workspace_root: &Path,
     state_manager: &StateManager,
-) -> Result<(), ForgeError> {
+) -> Result<(), VibeError> {
     let default_branch = git::default_branch(workspace_root)?;
     let remote_url = git::remote_url(workspace_root);
     let repo_name = workspace_root
@@ -66,10 +66,10 @@ async fn init_single_repo(
 async fn init_multi_repo(
     workspace_root: &Path,
     state_manager: &StateManager,
-) -> Result<(), ForgeError> {
+) -> Result<(), VibeError> {
     let repos = git::discover_repos(workspace_root)?;
     if repos.is_empty() {
-        return Err(ForgeError::NoReposFound);
+        return Err(VibeError::NoReposFound);
     }
 
     let repo_names: Vec<String> = repos.iter().map(|r| r.name.clone()).collect();

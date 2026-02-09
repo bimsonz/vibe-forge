@@ -1,7 +1,10 @@
 pub mod app;
 pub mod widgets;
 
-use app::{AgentEntry, AgentSource, App, DeferredAction, Focus, InputMode, NotifyLevel, ViewMode};
+use app::{
+    AgentEntry, AgentSource, App, AttentionInfo, AttentionReason, DeferredAction, Focus, InputMode,
+    NotifyLevel, ViewMode,
+};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -23,7 +26,7 @@ use crate::domain::agent::{AgentMode, AgentStatus};
 use crate::domain::template::AgentTemplate;
 use crate::infra::state::StateManager;
 use crate::infra::tmux::TmuxController;
-use crate::infra::watcher::{ForgeWatcher, WatcherEvent};
+use crate::infra::watcher::{VibeWatcher, WatcherEvent};
 use tokio::sync::mpsc;
 
 /// Result from the background nav-binding health checker.
@@ -107,7 +110,7 @@ pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
     // Start file watcher for agent completion (bounded to prevent OOM)
     let (watcher_tx, mut watcher_rx) = mpsc::channel(100);
     let agents_dir = workspace_root.join(".vibe").join("agents");
-    let _watcher = ForgeWatcher::start(agents_dir, watcher_tx).ok();
+    let _watcher = VibeWatcher::start(agents_dir, watcher_tx).ok();
 
     // Background nav-binding health checker: runs every 3 seconds off the main
     // event loop so verification + re-establishment never blocks key input.
@@ -306,6 +309,10 @@ pub async fn run(workspace_root: PathBuf) -> anyhow::Result<()> {
             // (round-robin) so we never block the event loop for multiple
             // pane_exists() calls.
             app.reconcile_tmux_state().await;
+
+            // Incremental attention detection — checks one session per tick
+            // (round-robin). Detects Claude exit, permission prompts, idle state.
+            check_session_attention(&mut app).await;
 
             // Check nav-binding health from background task (non-blocking)
             while let Ok(status) = nav_rx.try_recv() {
@@ -531,6 +538,7 @@ async fn start_background_sessions(app: &mut App) {
                 let resolved_system_prompt = resolve_session_system_prompt(&session, app);
 
                 let cmd = crate::infra::claude::interactive_command(
+                    app.config.claude_command(),
                     resolved_system_prompt.as_deref(),
                     &[],
                     &[],
@@ -654,12 +662,21 @@ fn draw_dashboard(f: &mut ratatui::Frame, app: &App, area: Rect) {
 }
 
 const BANNER: [&str; 6] = [
-    "██╗   ██╗██╗██████╗ ███████╗    ███████╗ ██████╗ ██████╗  ██████╗ ███████╗",
-    "██║   ██║██║██╔══██╗██╔════╝    ██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝",
-    "██║   ██║██║██████╔╝█████╗      █████╗  ██║   ██║██████╔╝██║  ███╗█████╗  ",
-    "╚██╗ ██╔╝██║██╔══██╗██╔══╝      ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  ",
-    " ╚████╔╝ ██║██████╔╝███████╗    ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗",
-    "  ╚═══╝  ╚═╝╚═════╝ ╚══════╝    ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝",
+    "██╗   ██╗██╗██████╗ ███████╗    ████████╗██████╗ ███████╗███████╗",
+    "██║   ██║██║██╔══██╗██╔════╝    ╚══██╔══╝██╔══██╗██╔════╝██╔════╝",
+    "██║   ██║██║██████╔╝█████╗         ██║   ██████╔╝█████╗  █████╗  ",
+    "╚██╗ ██╔╝██║██╔══██╗██╔══╝         ██║   ██╔══██╗██╔══╝  ██╔══╝  ",
+    " ╚████╔╝ ██║██████╔╝███████╗       ██║   ██║  ██║███████╗███████╗",
+    "  ╚═══╝  ╚═╝╚═════╝ ╚══════╝       ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝",
+];
+
+const TREE_ART: [&str; 6] = [
+    "        ██        ",
+    "      ██████      ",
+    "    ██████████    ",
+    "  ██████████████  ",
+    " ████████████████ ",
+    "       ████       ",
 ];
 
 /// Interpolate between two colors at position t (0.0 to 1.0).
@@ -671,31 +688,35 @@ fn lerp_color(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> Color {
 }
 
 /// Compute gradient color for a horizontal position.
-/// Left: hot pink (255, 0, 128) → Center: purple (128, 0, 255) → Right: cyan (0, 200, 255)
+/// Pink (255, 0, 128) → Purple (128, 0, 255) → Cyan (0, 200, 255) → Green (0, 220, 100)
 fn gradient_color(x: usize, width: usize) -> Color {
     let t = if width <= 1 {
         0.0
     } else {
         x as f32 / (width - 1) as f32
     };
-    if t < 0.5 {
-        lerp_color((255, 0, 128), (128, 0, 255), t * 2.0)
+    if t < 0.333 {
+        lerp_color((255, 0, 128), (128, 0, 255), t / 0.333)
+    } else if t < 0.667 {
+        lerp_color((128, 0, 255), (0, 200, 255), (t - 0.333) / 0.334)
     } else {
-        lerp_color((128, 0, 255), (0, 200, 255), (t - 0.5) * 2.0)
+        lerp_color((0, 200, 255), (0, 220, 100), (t - 0.667) / 0.333)
     }
 }
 
 fn render_banner(f: &mut ratatui::Frame, area: Rect) {
-    // Calculate the character width of the banner (first line)
-    let banner_char_width = BANNER[0].chars().count();
+    let gap = "    ";
+    // Calculate combined character width for gradient
+    let combined_width = BANNER[0].chars().count() + gap.len() + TREE_ART[0].chars().count();
     let area_width = area.width as usize;
 
     // Build lines with gradient coloring, centered
     let mut lines: Vec<Line> = Vec::with_capacity(8);
     lines.push(Line::from("")); // top padding
 
-    for art_line in &BANNER {
-        let chars: Vec<char> = art_line.chars().collect();
+    for (banner_line, tree_line) in BANNER.iter().zip(TREE_ART.iter()) {
+        let combined = format!("{}{}{}", banner_line, gap, tree_line);
+        let chars: Vec<char> = combined.chars().collect();
         let pad_left = area_width.saturating_sub(chars.len()) / 2;
 
         let mut spans: Vec<Span> = Vec::with_capacity(chars.len() + 1);
@@ -703,7 +724,7 @@ fn render_banner(f: &mut ratatui::Frame, area: Rect) {
             spans.push(Span::raw(" ".repeat(pad_left)));
         }
         for (i, ch) in chars.iter().enumerate() {
-            let color = gradient_color(i, banner_char_width);
+            let color = gradient_color(i, combined_width);
             spans.push(Span::styled(
                 ch.to_string(),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -1170,6 +1191,7 @@ async fn do_open_session(app: &mut App) -> anyhow::Result<()> {
                 };
 
                 let cmd = crate::infra::claude::interactive_command(
+                    app.config.claude_command(),
                     resolved_system_prompt.as_deref(),
                     &[],
                     &[],
@@ -1202,6 +1224,9 @@ async fn do_open_session(app: &mut App) -> anyhow::Result<()> {
     // select_window (line 673) already switched to an existing window,
     // or create_window made the new window active. The tmux Escape binding
     // handles returning to the dashboard.
+    // Clear attention — user has acknowledged this session
+    app.clear_attention(&session_name);
+
     app.push_notification(
         format!("Opened '{session_name}'"),
         NotifyLevel::Success,
@@ -1315,6 +1340,7 @@ async fn enter_overview(app: &mut App) -> anyhow::Result<()> {
             pane_id,
             content,
             color: app::session_color(session.id),
+            needs_attention: app.session_needs_attention(&session.name),
         });
     }
 
@@ -1341,13 +1367,138 @@ async fn refresh_overview_capture_incremental(app: &mut App) {
     }
 
     let idx = app.overview_next_refresh % tile_count;
+    // Pre-compute attention state outside the mutable borrow
+    let needs_attention = app
+        .overview_captures
+        .get(idx)
+        .map(|t| app.session_needs_attention(&t.session_name))
+        .unwrap_or(false);
     if let Some(tile) = app.overview_captures.get_mut(idx) {
         if let Ok(content) = TmuxController::capture_pane(&tile.pane_id, 50).await {
             tile.content = content;
         }
+        tile.needs_attention = needs_attention;
     }
     app.overview_next_refresh = idx + 1;
     app.overview_last_capture = Instant::now();
+}
+
+// ─── Attention detection ─────────────────────────────────────────────────────
+
+/// Idle-at-prompt threshold: seconds before an idle prompt triggers attention.
+const ATTENTION_IDLE_THRESHOLD_SECS: u64 = 10;
+
+/// Shells that indicate Claude has exited.
+const SHELL_COMMANDS: &[&str] = &["bash", "zsh", "fish", "sh", "dash"];
+
+/// Incrementally check ONE session for attention conditions (round-robin).
+/// Called once per tick. Makes 1-2 tmux calls per invocation.
+async fn check_session_attention(app: &mut App) {
+    let visible: Vec<_> = app.visible_sessions().into_iter().cloned().collect();
+    if visible.is_empty() {
+        app.attention_next_session = 0;
+        return;
+    }
+
+    let idx = app.attention_next_session % visible.len();
+    app.attention_next_session = idx + 1;
+
+    let session = &visible[idx];
+    let session_name = session.name.clone();
+    let tmux_session = app.state.tmux_session_name.clone();
+    let session_target = format!("{tmux_session}:{session_name}");
+
+    // Single tmux call: get pane_id + current_command (also validates window exists)
+    let (pane_id, cmd) = match TmuxController::first_pane_info(&session_target).await {
+        Ok(info) => info,
+        Err(_) => {
+            app.attention.remove(&session_name);
+            return;
+        }
+    };
+
+    // Check 1: Claude exited? (command is a shell)
+    if SHELL_COMMANDS.contains(&cmd.to_lowercase().as_str()) {
+        set_attention(app, &session_name, AttentionReason::ProcessExited, true);
+        return;
+    }
+
+    // Check 2: Permission/idle — requires capture_pane (second tmux call)
+    let content = match TmuxController::capture_pane(&pane_id, 10).await {
+        Ok(c) => c,
+        Err(_) => {
+            app.attention.remove(&session_name);
+            return;
+        }
+    };
+
+    if has_permission_prompt(&content) {
+        set_attention(app, &session_name, AttentionReason::PermissionPrompt, true);
+        return;
+    }
+
+    if is_idle_at_prompt(&content) {
+        let info = app
+            .attention
+            .entry(session_name.clone())
+            .or_insert_with(|| AttentionInfo {
+                reason: AttentionReason::IdleAtPrompt,
+                detected_at: Instant::now(),
+                active: false,
+            });
+        // Only activate after threshold (avoids false positives from normal pauses)
+        if info.reason == AttentionReason::IdleAtPrompt
+            && info.detected_at.elapsed() >= Duration::from_secs(ATTENTION_IDLE_THRESHOLD_SECS)
+        {
+            info.active = true;
+        }
+        return;
+    }
+
+    // No condition detected — clear any tracked state
+    app.attention.remove(&session_name);
+}
+
+/// Set or update attention state for a session.
+fn set_attention(app: &mut App, session_name: &str, reason: AttentionReason, immediate: bool) {
+    let info = app
+        .attention
+        .entry(session_name.to_string())
+        .or_insert_with(|| AttentionInfo {
+            reason: reason.clone(),
+            detected_at: Instant::now(),
+            active: false,
+        });
+    info.reason = reason;
+    if immediate {
+        info.active = true;
+    }
+}
+
+/// Check if pane content contains a permission/confirmation prompt.
+fn has_permission_prompt(content: &str) -> bool {
+    let tail: String = content.lines().rev().take(5).collect::<Vec<_>>().join("\n");
+    tail.contains("[Y/n]")
+        || tail.contains("[y/N]")
+        || tail.contains("Do you want to")
+        || tail.contains("allow this action")
+}
+
+/// Check if Claude is idle at its input prompt.
+fn is_idle_at_prompt(content: &str) -> bool {
+    // Find the last non-empty line
+    let last_line = content
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty());
+    match last_line {
+        Some(line) => {
+            let trimmed = line.trim();
+            // Claude Code's prompt character, or a bare > prompt
+            trimmed.ends_with('❯') || trimmed == ">"
+        }
+        None => false,
+    }
 }
 
 /// Handle keys in the session overview view
@@ -1393,9 +1544,11 @@ async fn handle_overview_key(app: &mut App, code: KeyCode) -> anyhow::Result<boo
         // Enter: switch to selected session's tmux window
         KeyCode::Enter => {
             if let Some(tile) = app.overview_captures.get(app.overview_selected) {
+                let session_name = tile.session_name.clone();
                 let tmux_session = app.state.tmux_session_name.clone();
-                let target = format!("{}:{}", tmux_session, tile.session_name);
+                let target = format!("{}:{}", tmux_session, session_name);
                 let _ = TmuxController::select_window(&target).await;
+                app.clear_attention(&session_name);
             }
             app.view_mode = ViewMode::Dashboard;
             app.overview_captures.clear();
@@ -1473,7 +1626,7 @@ fn do_copy(app: &mut App) {
 
 // ─── Template loading ────────────────────────────────────────────────────────
 
-/// Scan `.claude/agents/*.md` (Claude Code project agents) and forge built-in
+/// Scan `.claude/agents/*.md` (Claude Code project agents) and vibe built-in
 /// templates, returning a unified list of spawnable agents.
 fn load_agent_entries(
     workspace_root: &std::path::Path,
@@ -1515,14 +1668,14 @@ fn load_agent_entries(
         }
     }
 
-    // 2. Forge templates (workspace overrides > user global > built-ins)
+    // 2. Vibe templates (workspace overrides > user global > built-ins)
     let dirs = config.template_dirs(workspace_root);
     let templates = AgentTemplate::load_all(&dirs);
     for t in templates {
         entries.push(AgentEntry {
             name: t.name,
             description: t.description,
-            source: AgentSource::ForgeTemplate,
+            source: AgentSource::VibeTemplate,
         });
     }
 
@@ -1605,12 +1758,12 @@ async fn handle_select_template_key(app: &mut App, code: KeyCode) -> anyhow::Res
                     let entry_name = app.agent_entries[idx].name.clone();
                     let entry_desc = app.agent_entries[idx].description.clone();
                     let template_name = match &app.agent_entries[idx].source {
-                        AgentSource::ForgeTemplate => Some(entry_name.clone()),
+                        AgentSource::VibeTemplate => Some(entry_name.clone()),
                         AgentSource::ClaudeCode(_) | AgentSource::Shell => None,
                     };
                     let system_prompt = match &app.agent_entries[idx].source {
                         AgentSource::ClaudeCode(content) => Some(content.clone()),
-                        AgentSource::ForgeTemplate | AgentSource::Shell => None,
+                        AgentSource::VibeTemplate | AgentSource::Shell => None,
                     };
                     let session_name = app.selected_session().map(|s| s.name.clone());
 
@@ -1715,6 +1868,7 @@ async fn process_deferred_action(app: &mut App, action: DeferredAction) {
             {
                 Ok(()) => {
                     app.refresh_state().await;
+                    app.attention.remove(&name);
                     if app.selected_session >= app.visible_session_count().saturating_sub(1) {
                         app.selected_session = app.visible_session_count().saturating_sub(1);
                     }

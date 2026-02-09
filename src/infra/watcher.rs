@@ -12,11 +12,11 @@ pub enum WatcherEvent {
     AgentOutputWritten { path: PathBuf },
 }
 
-pub struct ForgeWatcher {
+pub struct VibeWatcher {
     _watcher: RecommendedWatcher,
 }
 
-impl ForgeWatcher {
+impl VibeWatcher {
     /// Watch .vibe/agents/ for output.json files being created.
     /// Uses a bounded channel sender to prevent unbounded memory growth
     /// if events arrive faster than the TUI can drain them.

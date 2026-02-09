@@ -1,9 +1,9 @@
 use crate::domain::agent::AgentResult;
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use arboard::Clipboard;
 
 /// Copy agent result summary to clipboard with formatting
-pub fn copy_agent_result(result: &AgentResult, agent_name: &str) -> Result<(), ForgeError> {
+pub fn copy_agent_result(result: &AgentResult, agent_name: &str) -> Result<(), VibeError> {
     let text = format!(
         "## Agent: {}\n\n{}\n\n---\n*Duration: {:.1}s*",
         agent_name,
@@ -14,11 +14,11 @@ pub fn copy_agent_result(result: &AgentResult, agent_name: &str) -> Result<(), F
 }
 
 /// Copy arbitrary text to clipboard
-pub fn copy_text(text: &str) -> Result<(), ForgeError> {
+pub fn copy_text(text: &str) -> Result<(), VibeError> {
     let mut clipboard =
-        Clipboard::new().map_err(|e| ForgeError::Clipboard(e.to_string()))?;
+        Clipboard::new().map_err(|e| VibeError::Clipboard(e.to_string()))?;
     clipboard
         .set_text(text)
-        .map_err(|e| ForgeError::Clipboard(e.to_string()))?;
+        .map_err(|e| VibeError::Clipboard(e.to_string()))?;
     Ok(())
 }

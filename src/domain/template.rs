@@ -1,5 +1,5 @@
 use crate::domain::agent::AgentMode;
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::Path;
@@ -31,16 +31,16 @@ struct TemplateFrontmatter {
 
 impl AgentTemplate {
     /// Parse a template from markdown content with +++ TOML frontmatter.
-    pub fn parse(name: &str, content: &str) -> Result<Self, ForgeError> {
+    pub fn parse(name: &str, content: &str) -> Result<Self, VibeError> {
         let parts: Vec<&str> = content.splitn(3, "+++").collect();
         if parts.len() != 3 {
-            return Err(ForgeError::Template(format!(
+            return Err(VibeError::Template(format!(
                 "Template '{name}' missing +++ frontmatter delimiters"
             )));
         }
 
         let frontmatter: TemplateFrontmatter = toml::from_str(parts[1].trim())
-            .map_err(|e| ForgeError::Template(format!("Template '{name}' frontmatter error: {e}")))?;
+            .map_err(|e| VibeError::Template(format!("Template '{name}' frontmatter error: {e}")))?;
 
         let system_prompt = parts[2].trim().to_string();
 
@@ -83,13 +83,13 @@ impl AgentTemplate {
     }
 
     /// Load a single template by name from search paths + built-ins.
-    pub fn load(name: &str, template_dirs: &[impl AsRef<Path>]) -> Result<Self, ForgeError> {
+    pub fn load(name: &str, template_dirs: &[impl AsRef<Path>]) -> Result<Self, VibeError> {
         // Check directories first
         for dir in template_dirs {
             let path = dir.as_ref().join(format!("{name}.md"));
             if path.exists() {
                 let content = std::fs::read_to_string(&path)
-                    .map_err(|e| ForgeError::Template(format!("Failed to read template: {e}")))?;
+                    .map_err(|e| VibeError::Template(format!("Failed to read template: {e}")))?;
                 return Self::parse(name, &content);
             }
         }
@@ -101,7 +101,7 @@ impl AgentTemplate {
             }
         }
 
-        Err(ForgeError::Template(format!("Template '{name}' not found")))
+        Err(VibeError::Template(format!("Template '{name}' not found")))
     }
 }
 

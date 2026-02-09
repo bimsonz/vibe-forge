@@ -1,14 +1,14 @@
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use crate::infra::state::StateManager;
 use std::path::Path;
 
-pub async fn execute(workspace_root: &Path, json: bool) -> Result<(), ForgeError> {
+pub async fn execute(workspace_root: &Path, json: bool) -> Result<(), VibeError> {
     let state_manager = StateManager::new(workspace_root);
     let state = state_manager.load().await?;
 
     if json {
         let output = serde_json::to_string_pretty(&state)
-            .map_err(|e| ForgeError::State(e.to_string()))?;
+            .map_err(|e| VibeError::State(e.to_string()))?;
         println!("{output}");
         return Ok(());
     }

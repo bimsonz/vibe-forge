@@ -2,7 +2,7 @@ use crate::config::MergedConfig;
 use crate::domain::workspace::WorkspaceState;
 use crate::infra::state::StateManager;
 use ratatui::style::Color;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::Instant;
 use uuid::Uuid;
@@ -36,6 +36,10 @@ pub struct App {
     pub reconcile_next_agent: usize,
     /// Deferred actions queued by key handlers to avoid blocking the event loop
     pub deferred_actions: VecDeque<DeferredAction>,
+    /// Per-session attention state (transient, not persisted). Key = session name.
+    pub attention: HashMap<String, AttentionInfo>,
+    /// Round-robin index for incremental attention checking.
+    pub attention_next_session: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -101,8 +105,8 @@ pub enum AgentSource {
     Shell,
     /// Claude Code .claude/agents/*.md — contains the full system prompt
     ClaudeCode(String),
-    /// Forge template — name matches a forge template to pass to spawn
-    ForgeTemplate,
+    /// Vibe template — name matches a vibe template to pass to spawn
+    VibeTemplate,
 }
 
 pub struct Notification {
@@ -117,6 +121,7 @@ pub struct OverviewTile {
     pub pane_id: String,
     pub content: String,
     pub color: Color,
+    pub needs_attention: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +129,27 @@ pub enum NotifyLevel {
     Info,
     Success,
     Error,
+}
+
+/// Why a session needs human attention.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttentionReason {
+    /// Claude process exited — pane is back at a shell prompt.
+    ProcessExited,
+    /// Permission/confirmation prompt detected (e.g., [Y/n]).
+    PermissionPrompt,
+    /// Claude idle at its input prompt for longer than the threshold.
+    IdleAtPrompt,
+}
+
+/// Transient in-memory attention state for a single session.
+pub struct AttentionInfo {
+    pub reason: AttentionReason,
+    /// When this condition was first detected (for debounce).
+    pub detected_at: Instant,
+    /// Whether the condition has passed the delay threshold and
+    /// should be shown to the user.
+    pub active: bool,
 }
 
 const SESSION_PALETTE: [Color; 10] = [
@@ -175,6 +201,8 @@ impl App {
             overview_next_refresh: 0,
             reconcile_next_agent: 0,
             deferred_actions: VecDeque::new(),
+            attention: HashMap::new(),
+            attention_next_session: 0,
         }
     }
 
@@ -236,6 +264,21 @@ impl App {
         self.selected_session()
             .map(|s| session_color(s.id))
             .unwrap_or(Color::Gray)
+    }
+
+    /// Returns true if the named session has an active attention condition.
+    pub fn session_needs_attention(&self, session_name: &str) -> bool {
+        self.attention.get(session_name).is_some_and(|a| a.active)
+    }
+
+    /// Clear attention for a session (user acknowledged by opening it).
+    pub fn clear_attention(&mut self, session_name: &str) {
+        self.attention.remove(session_name);
+    }
+
+    /// Count of sessions currently needing attention.
+    pub fn attention_count(&self) -> usize {
+        self.attention.values().filter(|a| a.active).count()
     }
 
     pub async fn refresh_state(&mut self) {

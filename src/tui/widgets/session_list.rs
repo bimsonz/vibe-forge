@@ -5,9 +5,19 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState};
 use ratatui::Frame;
+use std::time::SystemTime;
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let is_focused = app.focus == Focus::SessionList;
+
+    // 500ms on/off flash cycle for attention indicators
+    let flash_on = (SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        / 500)
+        % 2
+        == 0;
 
     let sessions: Vec<ListItem> = app
         .visible_sessions()
@@ -40,15 +50,26 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                 String::new()
             };
 
-            let line = Line::from(vec![
+            let needs_attention = app.session_needs_attention(&session.name);
+
+            let mut spans = vec![
                 Span::styled(format!(" {icon} "), Style::default().fg(icon_color)),
                 Span::styled(
                     format!("{}{}", session.name, agent_suffix),
                     Style::default().fg(scolor),
                 ),
-            ]);
+            ];
 
-            ListItem::new(line)
+            if needs_attention && flash_on {
+                spans.push(Span::styled(
+                    " !",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+
+            ListItem::new(Line::from(spans))
         })
         .collect();
 

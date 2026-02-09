@@ -1,5 +1,5 @@
 use crate::domain::agent::AgentResult;
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio::process::Command;
@@ -25,6 +25,7 @@ pub struct ClaudeJsonOutput {
 /// Build the command string to start an interactive claude session in a tmux pane.
 /// Returns the shell command string to send via `tmux send-keys`.
 pub fn interactive_command(
+    claude_command: &str,
     system_prompt: Option<&str>,
     allowed_tools: &[String],
     disallowed_tools: &[String],
@@ -32,7 +33,7 @@ pub fn interactive_command(
     resume_session: Option<&str>,
     extra_args: &[String],
 ) -> String {
-    let mut parts = vec!["claude".to_string()];
+    let mut parts = vec![claude_command.to_string()];
 
     if let Some(session_id) = resume_session {
         parts.push("--resume".to_string());
@@ -70,6 +71,7 @@ pub fn interactive_command(
 
 /// Run a headless claude agent, capturing JSON output.
 pub async fn run_headless(
+    claude_command: &str,
     prompt: &str,
     working_dir: &Path,
     system_prompt: Option<&str>,
@@ -77,43 +79,77 @@ pub async fn run_headless(
     disallowed_tools: &[String],
     permission_mode: Option<&str>,
     extra_args: &[String],
-) -> Result<ClaudeJsonOutput, ForgeError> {
-    let mut cmd = Command::new("claude");
-    cmd.current_dir(working_dir);
-    cmd.arg("-p");
-    cmd.arg("--output-format").arg("json");
+) -> Result<ClaudeJsonOutput, VibeError> {
+    let is_simple = !claude_command.contains(' ');
 
-    if let Some(sp) = system_prompt {
-        cmd.arg("--system-prompt").arg(sp);
-    }
-    if !allowed_tools.is_empty() {
-        cmd.arg("--allowedTools").arg(allowed_tools.join(","));
-    }
-    if !disallowed_tools.is_empty() {
-        cmd.arg("--disallowedTools").arg(disallowed_tools.join(","));
-    }
-    if let Some(pm) = permission_mode {
-        cmd.arg("--permission-mode").arg(pm);
-    }
-    for arg in extra_args {
-        cmd.arg(arg);
-    }
+    debug!(working_dir = %working_dir.display(), claude_command, "running headless claude agent");
 
-    cmd.arg(prompt);
+    let output = if is_simple {
+        let mut cmd = Command::new(claude_command);
+        cmd.current_dir(working_dir);
+        cmd.arg("-p");
+        cmd.arg("--output-format").arg("json");
 
-    debug!(working_dir = %working_dir.display(), "running headless claude agent");
-    let output = cmd.output().await?;
+        if let Some(sp) = system_prompt {
+            cmd.arg("--system-prompt").arg(sp);
+        }
+        if !allowed_tools.is_empty() {
+            cmd.arg("--allowedTools").arg(allowed_tools.join(","));
+        }
+        if !disallowed_tools.is_empty() {
+            cmd.arg("--disallowedTools").arg(disallowed_tools.join(","));
+        }
+        if let Some(pm) = permission_mode {
+            cmd.arg("--permission-mode").arg(pm);
+        }
+        for arg in extra_args {
+            cmd.arg(arg);
+        }
+        cmd.arg(prompt);
+        cmd.output().await?
+    } else {
+        // Compound command (env vars, wrapper script, etc.) — use sh -c
+        let mut shell_parts = vec![claude_command.to_string()];
+        shell_parts.push("-p".to_string());
+        shell_parts.push("--output-format".to_string());
+        shell_parts.push("json".to_string());
+        if let Some(sp) = system_prompt {
+            shell_parts.push("--system-prompt".to_string());
+            shell_parts.push(shell_quote(sp));
+        }
+        if !allowed_tools.is_empty() {
+            shell_parts.push("--allowedTools".to_string());
+            shell_parts.push(shell_quote(&allowed_tools.join(",")));
+        }
+        if !disallowed_tools.is_empty() {
+            shell_parts.push("--disallowedTools".to_string());
+            shell_parts.push(shell_quote(&disallowed_tools.join(",")));
+        }
+        if let Some(pm) = permission_mode {
+            shell_parts.push("--permission-mode".to_string());
+            shell_parts.push(pm.to_string());
+        }
+        for arg in extra_args {
+            shell_parts.push(arg.clone());
+        }
+        shell_parts.push(shell_quote(prompt));
+
+        let mut cmd = Command::new("sh");
+        cmd.current_dir(working_dir);
+        cmd.arg("-c").arg(shell_parts.join(" "));
+        cmd.output().await?
+    };
 
     if !output.status.success() && output.stdout.is_empty() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         error!(%stderr, "headless claude agent failed");
-        return Err(ForgeError::Claude(stderr));
+        return Err(VibeError::Claude(stderr));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: ClaudeJsonOutput = serde_json::from_str(&stdout).map_err(|e| {
         error!(error = %e, "failed to parse claude JSON output");
-        ForgeError::Claude(format!("Failed to parse claude output: {e}\nRaw: {stdout}"))
+        VibeError::Claude(format!("Failed to parse claude output: {e}\nRaw: {stdout}"))
     })?;
 
     info!(
@@ -124,6 +160,11 @@ pub async fn run_headless(
     );
 
     Ok(parsed)
+}
+
+/// Shell-quote a string for use in `sh -c` commands.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Convert ClaudeJsonOutput to domain AgentResult
@@ -138,8 +179,13 @@ pub fn to_agent_result(output: &ClaudeJsonOutput) -> AgentResult {
 }
 
 /// Check if claude CLI is available
-pub fn is_available() -> bool {
-    which::which("claude").is_ok()
+pub fn is_available(claude_command: &str) -> bool {
+    // Extract the actual binary — skip env var assignments (tokens with '=')
+    let binary = claude_command
+        .split_whitespace()
+        .find(|token| !token.contains('='))
+        .unwrap_or("claude");
+    which::which(binary).is_ok()
 }
 
 fn truncate_summary(text: &str, max_chars: usize) -> String {

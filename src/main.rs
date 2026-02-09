@@ -8,7 +8,8 @@ mod tui;
 
 use clap::Parser;
 use cli::{Cli, Commands, ListSubcommand, PlanSubcommand};
-use error::ForgeError;
+use error::VibeError;
+use std::path::Path;
 use tracing::info;
 
 #[tokio::main]
@@ -43,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     let _guard = init_tracing(workspace_root.as_deref());
 
     // Preflight checks
-    preflight_checks()?;
+    preflight_checks(workspace_root.as_deref())?;
 
     info!(
         command = ?cli.command,
@@ -53,12 +54,12 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         None | Some(Commands::Dashboard) => {
-            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            let root = workspace_root.ok_or(VibeError::NotGitRepo)?;
             tui::run(root).await?;
         }
 
         Some(Commands::Init) => {
-            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            let root = workspace_root.ok_or(VibeError::NotGitRepo)?;
             commands::init::execute(&root).await?;
         }
 
@@ -71,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
             headless,
             prompt,
         }) => {
-            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            let root = workspace_root.ok_or(VibeError::NotGitRepo)?;
             let cfg = config::load_config(Some(&root))?;
             commands::new::execute(
                 &root,
@@ -93,18 +94,18 @@ async fn main() -> anyhow::Result<()> {
             template,
             interactive,
         }) => {
-            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            let root = workspace_root.ok_or(VibeError::NotGitRepo)?;
             let cfg = config::load_config(Some(&root))?;
             commands::spawn::execute(&root, prompt, session, template, None, interactive, &cfg).await?;
         }
 
         Some(Commands::Status { json }) => {
-            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            let root = workspace_root.ok_or(VibeError::NotGitRepo)?;
             commands::status::execute(&root, json).await?;
         }
 
         Some(Commands::List { what }) => {
-            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            let root = workspace_root.ok_or(VibeError::NotGitRepo)?;
             match what {
                 ListSubcommand::Sessions => {
                     commands::status::execute(&root, false).await?;
@@ -137,24 +138,24 @@ async fn main() -> anyhow::Result<()> {
             force,
             delete_branch,
         }) => {
-            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            let root = workspace_root.ok_or(VibeError::NotGitRepo)?;
             let cfg = config::load_config(Some(&root))?;
             commands::kill::execute(&root, target, force, delete_branch, &cfg).await?;
         }
 
         Some(Commands::Attach { session }) => {
-            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            let root = workspace_root.ok_or(VibeError::NotGitRepo)?;
             commands::attach::execute(&root, session).await?;
         }
 
         Some(Commands::Review { pr, interactive }) => {
-            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            let root = workspace_root.ok_or(VibeError::NotGitRepo)?;
             let cfg = config::load_config(Some(&root))?;
             commands::review::execute(&root, pr, interactive, &cfg).await?;
         }
 
         Some(Commands::Plan { action }) => {
-            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            let root = workspace_root.ok_or(VibeError::NotGitRepo)?;
             match action {
                 PlanSubcommand::New { title, session } => {
                     commands::plan::create(&root, title, session).await?;
@@ -172,17 +173,17 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Some(Commands::Doctor) => {
-            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            let root = workspace_root.ok_or(VibeError::NotGitRepo)?;
             commands::doctor::execute(&root).await?;
         }
 
         Some(Commands::Cleanup { all, dry_run }) => {
-            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            let root = workspace_root.ok_or(VibeError::NotGitRepo)?;
             commands::cleanup::execute(&root, all, dry_run).await?;
         }
 
         Some(Commands::RefreshRepos) => {
-            let root = workspace_root.ok_or(ForgeError::NotGitRepo)?;
+            let root = workspace_root.ok_or(VibeError::NotGitRepo)?;
             commands::refresh_repos::execute(&root).await?;
         }
 
@@ -191,12 +192,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn preflight_checks() -> Result<(), ForgeError> {
+fn preflight_checks(workspace_root: Option<&Path>) -> Result<(), VibeError> {
     if !infra::tmux::TmuxController::is_available() {
-        return Err(ForgeError::TmuxNotInstalled);
+        return Err(VibeError::TmuxNotInstalled);
     }
-    if !infra::claude::is_available() {
-        return Err(ForgeError::ClaudeNotInstalled);
+    let cfg = config::load_config(workspace_root)?;
+    if !infra::claude::is_available(cfg.claude_command()) {
+        return Err(VibeError::ClaudeNotInstalled);
     }
     Ok(())
 }

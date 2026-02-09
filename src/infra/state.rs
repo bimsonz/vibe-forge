@@ -1,5 +1,5 @@
 use crate::domain::workspace::WorkspaceState;
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -33,7 +33,7 @@ impl StateManager {
     }
 
     /// Initialize .vibe directory structure
-    pub async fn init(&self) -> Result<(), ForgeError> {
+    pub async fn init(&self) -> Result<(), VibeError> {
         info!(dir = %self.vibe_dir.display(), "initializing .vibe directory");
         fs::create_dir_all(&self.vibe_dir).await?;
         fs::create_dir_all(self.vibe_dir.join("agents")).await?;
@@ -43,31 +43,31 @@ impl StateManager {
         Ok(())
     }
 
-    /// Check if forge is initialized
+    /// Check if vibe is initialized
     pub fn is_initialized(&self) -> bool {
         self.vibe_dir.exists() && self.state_file.exists()
     }
 
     /// Load state from disk
-    pub async fn load(&self) -> Result<WorkspaceState, ForgeError> {
+    pub async fn load(&self) -> Result<WorkspaceState, VibeError> {
         if !self.state_file.exists() {
-            return Err(ForgeError::NotInitialized);
+            return Err(VibeError::NotInitialized);
         }
         let content = fs::read_to_string(&self.state_file).await?;
         let state: WorkspaceState =
-            serde_json::from_str(&content).map_err(|e| ForgeError::State(e.to_string()))?;
+            serde_json::from_str(&content).map_err(|e| VibeError::State(e.to_string()))?;
         Ok(state)
     }
 
     /// Persist state to disk (atomic write via temp file + rename)
-    pub async fn save(&self, state: &WorkspaceState) -> Result<(), ForgeError> {
+    pub async fn save(&self, state: &WorkspaceState) -> Result<(), VibeError> {
         debug!(
             sessions = state.sessions.len(),
             agents = state.agents.len(),
             "saving workspace state"
         );
         let json = serde_json::to_string_pretty(state)
-            .map_err(|e| ForgeError::State(e.to_string()))?;
+            .map_err(|e| VibeError::State(e.to_string()))?;
         let tmp = self.state_file.with_extension("json.tmp");
         fs::write(&tmp, &json).await?;
         fs::rename(&tmp, &self.state_file).await?;
@@ -79,7 +79,7 @@ impl StateManager {
         &self,
         agent_id: &uuid::Uuid,
         output: &str,
-    ) -> Result<PathBuf, ForgeError> {
+    ) -> Result<PathBuf, VibeError> {
         let agent_dir = self.agents_dir().join(agent_id.to_string());
         fs::create_dir_all(&agent_dir).await?;
         let output_file = agent_dir.join("output.json");
@@ -87,7 +87,7 @@ impl StateManager {
         Ok(output_file)
     }
 
-    async fn ensure_gitignore(&self) -> Result<(), ForgeError> {
+    async fn ensure_gitignore(&self) -> Result<(), VibeError> {
         let gitignore = self
             .vibe_dir
             .parent()

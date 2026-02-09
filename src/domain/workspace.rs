@@ -116,7 +116,7 @@ mod tests {
             name: "test-repo".into(),
             default_branch: "main".into(),
             remote_url: None,
-            worktree_prefix: "test-repo-forge".into(),
+            worktree_prefix: "test-repo-vibe".into(),
             worktree_base_dir: PathBuf::from("/tmp"),
             kind: Default::default(),
             repos: vec![],
@@ -146,16 +146,16 @@ mod tests {
     #[test]
     fn test_workspace_state_new() {
         let ws = make_workspace();
-        let state = WorkspaceState::new(ws, "forge-test".into());
+        let state = WorkspaceState::new(ws, "vibe-test".into());
         assert!(state.sessions.is_empty());
         assert!(state.agents.is_empty());
-        assert_eq!(state.tmux_session_name, "forge-test");
+        assert_eq!(state.tmux_session_name, "vibe-test");
     }
 
     #[test]
     fn test_find_session_by_name() {
         let ws = make_workspace();
-        let mut state = WorkspaceState::new(ws, "forge-test".into());
+        let mut state = WorkspaceState::new(ws, "vibe-test".into());
         let session = make_session("my-feature");
         state.sessions.push(session);
 
@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn test_active_sessions() {
         let ws = make_workspace();
-        let mut state = WorkspaceState::new(ws, "forge-test".into());
+        let mut state = WorkspaceState::new(ws, "vibe-test".into());
 
         let mut s1 = make_session("active");
         s1.status = SessionStatus::Active;
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn test_agents_for_session() {
         let ws = make_workspace();
-        let mut state = WorkspaceState::new(ws, "forge-test".into());
+        let mut state = WorkspaceState::new(ws, "vibe-test".into());
 
         let session = make_session("my-feature");
         let session_id = session.id;
@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn test_running_agents() {
         let ws = make_workspace();
-        let mut state = WorkspaceState::new(ws, "forge-test".into());
+        let mut state = WorkspaceState::new(ws, "vibe-test".into());
 
         let session_id = Uuid::new_v4();
         let mut a1 = make_agent(session_id, "running");
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn test_state_serialization_roundtrip() {
         let ws = make_workspace();
-        let mut state = WorkspaceState::new(ws, "forge-test".into());
+        let mut state = WorkspaceState::new(ws, "vibe-test".into());
         state.sessions.push(make_session("test"));
 
         let json = serde_json::to_string(&state).unwrap();

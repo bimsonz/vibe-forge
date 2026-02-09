@@ -1,5 +1,5 @@
 use crate::domain::workspace::RepoInfo;
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use git2::Repository;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
@@ -12,17 +12,17 @@ pub struct WorktreeInfo {
 }
 
 /// Detect the repository root from any path within it
-pub fn find_repo_root(start_path: &Path) -> Result<PathBuf, ForgeError> {
-    let repo = Repository::discover(start_path).map_err(|_| ForgeError::NotGitRepo)?;
-    let workdir = repo.workdir().ok_or(ForgeError::Git(
+pub fn find_repo_root(start_path: &Path) -> Result<PathBuf, VibeError> {
+    let repo = Repository::discover(start_path).map_err(|_| VibeError::NotGitRepo)?;
+    let workdir = repo.workdir().ok_or(VibeError::Git(
         "Bare repositories are not supported".into(),
     ))?;
     Ok(workdir.to_path_buf())
 }
 
 /// Get the default branch (main or master)
-pub fn default_branch(repo_root: &Path) -> Result<String, ForgeError> {
-    let repo = Repository::open(repo_root).map_err(|_| ForgeError::NotGitRepo)?;
+pub fn default_branch(repo_root: &Path) -> Result<String, VibeError> {
+    let repo = Repository::open(repo_root).map_err(|_| VibeError::NotGitRepo)?;
     for candidate in &["refs/remotes/origin/main", "refs/remotes/origin/master"] {
         if repo.find_reference(candidate).is_ok() {
             return Ok(candidate.rsplit('/').next().unwrap().to_string());
@@ -47,7 +47,7 @@ pub async fn create_worktree(
     branch_name: &str,
     base_ref: Option<&str>,
     worktree_base_dir: &Path,
-) -> Result<WorktreeInfo, ForgeError> {
+) -> Result<WorktreeInfo, VibeError> {
     // Fetch origin so we have the latest refs
     let fetch_output = Command::new("git")
         .current_dir(repo_root)
@@ -99,7 +99,7 @@ pub async fn create_worktree(
             .await?;
 
         if !output2.status.success() {
-            return Err(ForgeError::Git(
+            return Err(VibeError::Git(
                 String::from_utf8_lossy(&output2.stderr).to_string(),
             ));
         }
@@ -116,7 +116,7 @@ pub async fn remove_worktree(
     repo_root: &Path,
     worktree_path: &Path,
     delete_branch: bool,
-) -> Result<(), ForgeError> {
+) -> Result<(), VibeError> {
     // Get the branch name before removing
     let branch = if delete_branch {
         worktree_branch(worktree_path).await.ok()
@@ -132,7 +132,7 @@ pub async fn remove_worktree(
         .await?;
 
     if !output.status.success() {
-        return Err(ForgeError::Git(
+        return Err(VibeError::Git(
             String::from_utf8_lossy(&output.stderr).to_string(),
         ));
     }
@@ -150,7 +150,7 @@ pub async fn remove_worktree(
 }
 
 /// List all worktrees managed by vibe (identified by naming convention)
-pub async fn list_vibe_worktrees(repo_root: &Path) -> Result<Vec<WorktreeInfo>, ForgeError> {
+pub async fn list_vibe_worktrees(repo_root: &Path) -> Result<Vec<WorktreeInfo>, VibeError> {
     let output = Command::new("git")
         .current_dir(repo_root)
         .args(["worktree", "list", "--porcelain"])
@@ -185,7 +185,7 @@ pub async fn list_vibe_worktrees(repo_root: &Path) -> Result<Vec<WorktreeInfo>, 
 }
 
 /// Prune stale worktree references
-pub async fn prune(repo_root: &Path) -> Result<(), ForgeError> {
+pub async fn prune(repo_root: &Path) -> Result<(), VibeError> {
     Command::new("git")
         .current_dir(repo_root)
         .args(["worktree", "prune"])
@@ -196,10 +196,10 @@ pub async fn prune(repo_root: &Path) -> Result<(), ForgeError> {
 
 /// Scan immediate subdirectories of `parent_dir` for git repositories.
 /// Returns a `RepoInfo` for each subdirectory that contains a `.git` directory or file.
-pub fn discover_repos(parent_dir: &Path) -> Result<Vec<RepoInfo>, ForgeError> {
+pub fn discover_repos(parent_dir: &Path) -> Result<Vec<RepoInfo>, VibeError> {
     let mut repos = Vec::new();
     let entries = std::fs::read_dir(parent_dir)
-        .map_err(|e| ForgeError::Git(format!("Cannot read directory: {e}")))?;
+        .map_err(|e| VibeError::Git(format!("Cannot read directory: {e}")))?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -244,7 +244,7 @@ pub async fn create_worktree_at(
     branch_name: &str,
     base_ref: Option<&str>,
     exact_path: &Path,
-) -> Result<WorktreeInfo, ForgeError> {
+) -> Result<WorktreeInfo, VibeError> {
     // Fetch origin
     let fetch_output = Command::new("git")
         .current_dir(repo_root)
@@ -286,7 +286,7 @@ pub async fn create_worktree_at(
             .await?;
 
         if !output2.status.success() {
-            return Err(ForgeError::Git(
+            return Err(VibeError::Git(
                 String::from_utf8_lossy(&output2.stderr).to_string(),
             ));
         }
@@ -298,7 +298,7 @@ pub async fn create_worktree_at(
     })
 }
 
-async fn worktree_branch(worktree_path: &Path) -> Result<String, ForgeError> {
+async fn worktree_branch(worktree_path: &Path) -> Result<String, VibeError> {
     let output = Command::new("git")
         .current_dir(worktree_path)
         .args(["rev-parse", "--abbrev-ref", "HEAD"])

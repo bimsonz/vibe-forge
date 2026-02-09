@@ -53,9 +53,33 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_tile(f: &mut Frame, tile: &OverviewTile, selected: bool, area: Rect) {
-    let border_color = if selected { tile.color } else { Color::DarkGray };
+    let needs_attention = tile.needs_attention && !selected;
+
+    // 500ms on/off flash cycle for attention indicators
+    let flash_on = if needs_attention {
+        (std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            / 500)
+            % 2
+            == 0
+    } else {
+        false
+    };
+
+    let border_color = if selected {
+        tile.color
+    } else if flash_on {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
+
     let border_type = if selected {
         BorderType::Double
+    } else if needs_attention {
+        BorderType::Thick
     } else {
         BorderType::Plain
     };

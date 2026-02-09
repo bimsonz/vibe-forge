@@ -1,5 +1,5 @@
 use crate::config::MergedConfig;
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use crate::infra::{git, state::StateManager, tmux::TmuxController};
 use std::path::Path;
 use tracing::{info, warn};
@@ -10,16 +10,16 @@ pub async fn execute(
     force: bool,
     delete_branch: bool,
     _config: &MergedConfig,
-) -> Result<(), ForgeError> {
+) -> Result<(), VibeError> {
     let state_manager = StateManager::new(workspace_root);
     let mut state = state_manager.load().await?;
 
     let session = state
         .find_session_by_name_mut(&target)
-        .ok_or_else(|| ForgeError::SessionNotFound(target.clone()))?;
+        .ok_or_else(|| VibeError::SessionNotFound(target.clone()))?;
 
     if session.is_main {
-        return Err(ForgeError::User(
+        return Err(VibeError::User(
             "Cannot kill the main session".into(),
         ));
     }

@@ -1,11 +1,11 @@
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// A Plan is a shared document between agents.
-/// Lives at .forge/plans/{id}.md with TOML frontmatter.
+/// Lives at .vibe/plans/{id}.md with TOML frontmatter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
     pub id: Uuid,
@@ -70,7 +70,7 @@ impl Plan {
     }
 
     /// Write the plan to disk as markdown with TOML frontmatter.
-    pub fn save(&self, body: &str) -> Result<(), ForgeError> {
+    pub fn save(&self, body: &str) -> Result<(), VibeError> {
         let frontmatter = PlanFrontmatter {
             id: self.id,
             title: self.title.clone(),
@@ -80,7 +80,7 @@ impl Plan {
             updated_at: Utc::now(),
         };
         let toml_str =
-            toml::to_string_pretty(&frontmatter).map_err(|e| ForgeError::State(e.to_string()))?;
+            toml::to_string_pretty(&frontmatter).map_err(|e| VibeError::State(e.to_string()))?;
         let content = format!("+++\n{toml_str}+++\n\n{body}");
 
         if let Some(parent) = self.file_path.parent() {
@@ -91,17 +91,17 @@ impl Plan {
     }
 
     /// Load a plan from a markdown file with TOML frontmatter.
-    pub fn load(path: &Path) -> Result<(Self, String), ForgeError> {
+    pub fn load(path: &Path) -> Result<(Self, String), VibeError> {
         let content = std::fs::read_to_string(path)?;
         let (plan, body) = Self::parse(&content, path)?;
         Ok((plan, body))
     }
 
     /// Parse plan content from a string.
-    fn parse(content: &str, path: &Path) -> Result<(Self, String), ForgeError> {
+    fn parse(content: &str, path: &Path) -> Result<(Self, String), VibeError> {
         let content = content.trim_start();
         if !content.starts_with("+++") {
-            return Err(ForgeError::State(format!(
+            return Err(VibeError::State(format!(
                 "Plan file missing frontmatter: {}",
                 path.display()
             )));
@@ -109,7 +109,7 @@ impl Plan {
 
         let after_open = &content[3..];
         let close_pos = after_open.find("+++").ok_or_else(|| {
-            ForgeError::State(format!(
+            VibeError::State(format!(
                 "Plan file missing closing +++: {}",
                 path.display()
             ))
@@ -119,7 +119,7 @@ impl Plan {
         let body = after_open[close_pos + 3..].trim_start().to_string();
 
         let fm: PlanFrontmatter =
-            toml::from_str(toml_str).map_err(|e| ForgeError::State(e.to_string()))?;
+            toml::from_str(toml_str).map_err(|e| VibeError::State(e.to_string()))?;
 
         let status = match fm.status.as_str() {
             "Active" => PlanStatus::Active,
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn test_plan_roundtrip() {
-        let dir = std::env::temp_dir().join("forge-test-plans");
+        let dir = std::env::temp_dir().join("vibe-test-plans");
         let _ = std::fs::create_dir_all(&dir);
 
         let plan = Plan::new("Test Plan".into(), Some("my-session".into()), &dir);

@@ -1,7 +1,7 @@
 use crate::config::MergedConfig;
 use crate::domain::agent::{Agent, AgentMode, AgentStatus};
 use crate::domain::template::AgentTemplate;
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use crate::infra::{claude, gh, state::StateManager, tmux::TmuxController};
 use std::path::Path;
 
@@ -10,9 +10,9 @@ pub async fn execute(
     pr: String,
     interactive: bool,
     config: &MergedConfig,
-) -> Result<(), ForgeError> {
+) -> Result<(), VibeError> {
     if !gh::is_available() {
-        return Err(ForgeError::User(
+        return Err(VibeError::User(
             "gh CLI not found. Install from: https://cli.github.com".into(),
         ));
     }
@@ -103,6 +103,7 @@ Please provide a thorough code review following your review process."#,
         // Build and send claude command with the review prompt
         let tmux_target = format!("{}:{}", state.tmux_session_name, session_name);
         let cmd = claude::interactive_command(
+            config.claude_command(),
             Some(&template.system_prompt),
             &template.allowed_tools,
             &template.disallowed_tools,
@@ -122,7 +123,7 @@ Please provide a thorough code review following your review process."#,
         tokio::fs::write(&prompt_file, &prompt).await?;
 
         println!("  Review session created: {session_name}");
-        println!("  Run `forge attach {session_name}` to interact with the reviewer");
+        println!("  Run `vibe attach {session_name}` to interact with the reviewer");
         println!("  Prompt saved to: {}", prompt_file.display());
     } else {
         // Headless review
@@ -153,6 +154,7 @@ Please provide a thorough code review following your review process."#,
         let allowed_tools = template.allowed_tools.clone();
         let disallowed_tools = template.disallowed_tools.clone();
         let permission_mode = template.permission_mode.clone();
+        let claude_cmd = config.claude_command().to_string();
         let extra_args = config.global.claude_extra_args.clone();
         let wt = workspace_root.to_path_buf();
 
@@ -162,6 +164,7 @@ Please provide a thorough code review following your review process."#,
         // Run in background
         tokio::spawn(async move {
             let result = claude::run_headless(
+                &claude_cmd,
                 &prompt,
                 &wt,
                 Some(&system_prompt),

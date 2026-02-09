@@ -1,5 +1,5 @@
 use crate::domain::plan::{Plan, PlanStatus};
-use crate::error::ForgeError;
+use crate::error::VibeError;
 use crate::infra::state::StateManager;
 use std::path::Path;
 
@@ -7,10 +7,10 @@ pub async fn create(
     workspace_root: &Path,
     title: String,
     session: Option<String>,
-) -> Result<(), ForgeError> {
+) -> Result<(), VibeError> {
     let state_manager = StateManager::new(workspace_root);
     if !state_manager.is_initialized() {
-        return Err(ForgeError::NotInitialized);
+        return Err(VibeError::NotInitialized);
     }
 
     let plans_dir = state_manager.plans_dir();
@@ -26,17 +26,17 @@ pub async fn create(
     Ok(())
 }
 
-pub async fn list(workspace_root: &Path) -> Result<(), ForgeError> {
+pub async fn list(workspace_root: &Path) -> Result<(), VibeError> {
     let state_manager = StateManager::new(workspace_root);
     if !state_manager.is_initialized() {
-        return Err(ForgeError::NotInitialized);
+        return Err(VibeError::NotInitialized);
     }
 
     let plans_dir = state_manager.plans_dir();
     let plans = Plan::load_all(&plans_dir);
 
     if plans.is_empty() {
-        println!("No plans found. Create one with: forge plan new \"My plan title\"");
+        println!("No plans found. Create one with: vibe plan new \"My plan title\"");
         return Ok(());
     }
 
@@ -62,10 +62,10 @@ pub async fn list(workspace_root: &Path) -> Result<(), ForgeError> {
     Ok(())
 }
 
-pub async fn view(workspace_root: &Path, query: String) -> Result<(), ForgeError> {
+pub async fn view(workspace_root: &Path, query: String) -> Result<(), VibeError> {
     let state_manager = StateManager::new(workspace_root);
     if !state_manager.is_initialized() {
-        return Err(ForgeError::NotInitialized);
+        return Err(VibeError::NotInitialized);
     }
 
     let plans_dir = state_manager.plans_dir();
@@ -96,16 +96,16 @@ pub async fn view(workspace_root: &Path, query: String) -> Result<(), ForgeError
             println!("{body}");
         }
         None => {
-            return Err(ForgeError::User(format!("No plan matching '{query}'")));
+            return Err(VibeError::User(format!("No plan matching '{query}'")));
         }
     }
     Ok(())
 }
 
-pub async fn copy(workspace_root: &Path, query: String) -> Result<(), ForgeError> {
+pub async fn copy(workspace_root: &Path, query: String) -> Result<(), VibeError> {
     let state_manager = StateManager::new(workspace_root);
     if !state_manager.is_initialized() {
-        return Err(ForgeError::NotInitialized);
+        return Err(VibeError::NotInitialized);
     }
 
     let plans_dir = state_manager.plans_dir();
@@ -127,7 +127,7 @@ pub async fn copy(workspace_root: &Path, query: String) -> Result<(), ForgeError
             println!("Plan '{}' copied to clipboard.", plan.title);
         }
         None => {
-            return Err(ForgeError::User(format!("No plan matching '{query}'")));
+            return Err(VibeError::User(format!("No plan matching '{query}'")));
         }
     }
     Ok(())
